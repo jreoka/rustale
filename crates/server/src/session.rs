@@ -18,7 +18,8 @@ use rustale_protocol::setup::{
     WorldLoadProgress, WorldSettings,
 };
 use rustale_protocol::world::{
-    uniform_section_data, ClientReady, JoinWorld, SetChunk, SetChunkEnvironments, SetColumn, SetClientId,
+    uniform_section_data, AddToServerPlayerList, ClientReady, JoinWorld, ServerPlayerListPlayer,
+    SetChunk, SetChunkEnvironments, SetColumn, SetClientId,
     VoiceConfig, UpdateWorldMapSettings,
     SetEntitySeed, SetTimeDilation, SetUpdateRate, UpdateFeatures, UpdatePostFxSettings,
     UpdateSunSettings, WorldGameplayConfig, HEIGHT_SECTIONS,
@@ -503,6 +504,26 @@ impl Session {
         // JoinWorld: the baseline client log shows VoiceConfig received
         // just ahead of JoinWorldPacket.
         out.packets.push((ids::VOICE_CONFIG, VoiceConfig::defaults().serialize()));
+        // ServerPlayerListModule.onPlayerConnect also fires during
+        // addPlayer: the joining client receives the full player list
+        // (here just itself). The reference has always sent this; we
+        // never did, leaving the client's server player list empty.
+        if let Some(uuid) = self.uuid {
+            out.packets.push((
+                ids::ADD_TO_SERVER_PLAYER_LIST,
+                AddToServerPlayerList {
+                    players: vec![ServerPlayerListPlayer {
+                        uuid,
+                        username: Some(self.username.clone().unwrap_or_default()),
+                        world_uuid: Some(self.world_uuid),
+                        ping: 0,
+                        spectating: false,
+                        lives_remaining: None,
+                    }],
+                }
+                .serialize(),
+            ));
+        }
         // The player's own entity spawn precedes JoinWorld, as in the
         // reference (addPlayer adds the entity — firing sendPlayerSelf —
         // before JoinWorld is written). Network id matches SetClientId.
@@ -706,6 +727,7 @@ mod tests {
             vec![
                 ids::UPDATE_WORLD_MAP_SETTINGS,
                 ids::VOICE_CONFIG,
+                ids::ADD_TO_SERVER_PLAYER_LIST,
                 ids::ENTITY_UPDATES,
                 ids::JOIN_WORLD,
             ]

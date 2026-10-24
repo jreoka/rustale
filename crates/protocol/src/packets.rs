@@ -51,6 +51,7 @@ pub mod ids {
     pub const UPDATE_SUN_SETTINGS: i32 = 360;
     pub const UPDATE_POST_FX_SETTINGS: i32 = 361;
     pub const SERVER_INFO: i32 = 223;
+    pub const ADD_TO_SERVER_PLAYER_LIST: i32 = 224;
     pub const INSECURE_PLAYER_OPTIONS: i32 = 363;
     pub const REQUEST_INSECURE_PLAYER_OPTIONS: i32 = 364;
 }

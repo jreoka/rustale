@@ -338,6 +338,68 @@ impl SetChunkHeightmap {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ServerPlayerListPlayer (structure) and AddToServerPlayerList (224).
+// Layout verified against the generated accessors: null-bits byte
+// (bit 0 worldUuid, bit 1 livesRemaining, bit 2 username — fixed-block
+// nullables first, then the variable field), uuid at 1, worldUuid at
+// 17, ping i32 at 33, spectating byte at 37, livesRemaining i32 at 38
+// (space reserved when null), username varstring at 42 — the single
+// variable field, written inline.
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerPlayerListPlayer {
+    pub uuid: [u8; 16],
+    pub username: Option<String>,
+    pub world_uuid: Option<[u8; 16]>,
+    pub ping: i32,
+    pub spectating: bool,
+    pub lives_remaining: Option<i32>,
+}
+
+impl ServerPlayerListPlayer {
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        let mut null_bits = 0u8;
+        if self.world_uuid.is_some() {
+            null_bits |= 0x01;
+        }
+        if self.lives_remaining.is_some() {
+            null_bits |= 0x02;
+        }
+        if self.username.is_some() {
+            null_bits |= 0x04;
+        }
+        w.write_u8(null_bits);
+        w.write_uuid(&self.uuid);
+        w.write_uuid(&self.world_uuid.unwrap_or([0; 16]));
+        w.write_i32(self.ping);
+        w.write_u8(self.spectating as u8);
+        w.write_i32(self.lives_remaining.unwrap_or(0));
+        if let Some(name) = &self.username {
+            w.write_string(name, 4096000).expect("username within limits");
+        }
+        debug_assert!(w.buf.len() >= 42);
+        w.buf
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddToServerPlayerList {
+    pub players: Vec<ServerPlayerListPlayer>,
+}
+
+impl AddToServerPlayerList {
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.write_var_int(self.players.len() as u32);
+        for p in &self.players {
+            w.buf.extend_from_slice(&p.serialize());
+        }
+        w.buf
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,6 +421,30 @@ mod tests {
         let r = Reader::new(&bytes);
         assert_eq!(r.i32_at(18).unwrap(), 0);
         assert_eq!(r.i32_at(22).unwrap(), 9);
+    }
+
+    #[test]
+    fn server_player_list_player_layout() {
+        let packet = AddToServerPlayerList {
+            players: vec![ServerPlayerListPlayer {
+                uuid: [0xAA; 16],
+                username: Some("Cross".to_string()),
+                world_uuid: Some([0xBB; 16]),
+                ping: 0,
+                spectating: false,
+                lives_remaining: None,
+            }],
+        };
+        let bytes = packet.serialize();
+        assert_eq!(bytes[0], 1); // one player
+        assert_eq!(bytes[1], 0x05); // worldUuid + username present
+        assert_eq!(&bytes[2..18], &[0xAA; 16]); // uuid at struct offset 1
+        assert_eq!(&bytes[18..34], &[0xBB; 16]); // worldUuid at offset 17
+        let r = Reader::new(&bytes);
+        assert_eq!(r.i32_at(1 + 33).unwrap(), 0); // ping at offset 33
+        assert_eq!(bytes[1 + 37], 0); // spectating at offset 37
+        assert_eq!(r.i32_at(1 + 38).unwrap(), 0); // lives slot reserved
+        assert_eq!(&bytes[1 + 42..], b"\x05Cross"); // username at offset 42
     }
 
     #[test]

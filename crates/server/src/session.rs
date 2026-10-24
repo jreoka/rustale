@@ -524,7 +524,9 @@ impl Session {
         // the player is added; it does not wait for ClientReady. Sending
         // the spawn area now also breaks any wait cycle where the client
         // only readies up once it has terrain.
-        if !self.chunks_sent {
+        // Diagnostic toggle: RUSTALE_NO_CHUNKS=1 skips the chunk stream
+        // entirely to isolate join processing from chunk content.
+        if !self.chunks_sent && std::env::var_os("RUSTALE_NO_CHUNKS").is_none() {
             self.chunks_sent = true;
             self.stream_flat_world(out);
         }

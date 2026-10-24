@@ -6,7 +6,13 @@
 pub mod frame;
 pub mod io;
 pub mod packets;
+pub mod setup;
+pub mod structures;
 
 pub use frame::{encode_frame, FrameDecoder};
 pub use io::{ProtoError, Reader, Result, Writer};
-pub use packets::{Connect, HostAddress, InsecurePlayerOptions, RequestInsecurePlayerOptions};
+pub use packets::{
+    decode_packet_payload, encode_packet_frame, is_compressed, Connect, HostAddress,
+    InsecurePlayerOptions, RequestInsecurePlayerOptions, ServerDisconnect,
+};
+pub use structures::{Asset, FormattedMessage};

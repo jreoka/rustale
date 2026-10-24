@@ -19,8 +19,84 @@ pub mod ids {
     pub const PING: i32 = 3;
     pub const PONG: i32 = 4;
     pub const NETWORK_TICK: i32 = 5;
+    pub const CONNECT_ACCEPT: i32 = 14;
+    pub const WORLD_SETTINGS: i32 = 20;
+    pub const WORLD_LOAD_PROGRESS: i32 = 21;
+    pub const WORLD_LOAD_FINISHED: i32 = 22;
+    pub const REQUEST_ASSETS: i32 = 23;
+    pub const ASSET_INITIALIZE: i32 = 24;
+    pub const ASSET_PART: i32 = 25;
+    pub const ASSET_FINALIZE: i32 = 26;
+    pub const SET_UPDATE_RATE: i32 = 29;
+    pub const VIEW_RADIUS: i32 = 32;
+    pub const SETUP_FINALIZE: i32 = 33;
+    pub const SERVER_INFO: i32 = 223;
     pub const INSECURE_PLAYER_OPTIONS: i32 = 363;
     pub const REQUEST_INSECURE_PLAYER_OPTIONS: i32 = 364;
+}
+
+/// Whether the packet's payload travels zstd-compressed inside its frame.
+/// Extracted from the generated reference serializers (84 packet types,
+/// including all the Update* registry packets and the chunk packets).
+pub fn is_compressed(packet_id: i32) -> bool {
+    matches!(
+        packet_id,
+        20 | 23 | 25 | 40..=68 | 72..=94 | 131..=134 | 136 | 138 | 161 | 170 | 181 | 182 | 200
+            | 201 | 217 | 218 | 222 | 235 | 238 | 241 | 253 | 262 | 305 | 313 | 319 | 320 | 323
+            | 344 | 411 | 429 | 508
+    )
+}
+
+/// Upper bound accepted for a decompressed packet payload.
+pub const MAX_PACKET_PAYLOAD: usize = 256 * 1024 * 1024;
+
+/// Frame a packet for the wire, compressing its payload if the packet
+/// type calls for it.
+pub fn encode_packet_frame(packet_id: i32, payload: &[u8]) -> Vec<u8> {
+    if is_compressed(packet_id) && !payload.is_empty() {
+        let compressed = zstd::bulk::compress(payload, 3).expect("zstd compress");
+        crate::frame::encode_frame(packet_id, &compressed)
+    } else {
+        crate::frame::encode_frame(packet_id, payload)
+    }
+}
+
+/// Recover a packet's payload from its raw frame body, decompressing if
+/// the packet type calls for it.
+pub fn decode_packet_payload(packet_id: i32, raw: &[u8]) -> Result<Vec<u8>> {
+    if is_compressed(packet_id) && !raw.is_empty() {
+        zstd::bulk::decompress(raw, MAX_PACKET_PAYLOAD)
+            .map_err(|_| ProtoError::DecompressionFailed)
+    } else {
+        Ok(raw.to_vec())
+    }
+}
+
+/// Packet 2, server -> client. Single variable field -> inline.
+/// `disconnect_type`: 0 = Disconnect, 1 = Crash.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServerDisconnect {
+    pub reason: Option<crate::structures::FormattedMessage>,
+    pub disconnect_type: u8,
+}
+
+impl ServerDisconnect {
+    pub fn new_translation(key: &str) -> Self {
+        ServerDisconnect {
+            reason: Some(crate::structures::FormattedMessage::translation(key)),
+            disconnect_type: 0,
+        }
+    }
+
+    pub fn serialize(&self) -> Result<Vec<u8>> {
+        let mut w = Writer::new();
+        w.write_u8(self.reason.is_some() as u8);
+        w.write_u8(self.disconnect_type);
+        if let Some(reason) = &self.reason {
+            w.buf.extend_from_slice(&reason.serialize()?);
+        }
+        Ok(w.buf)
+    }
 }
 
 /// HostAddress structure: fixed block is just the port, variable fields
@@ -321,6 +397,23 @@ mod tests {
             Err(ProtoError::InvalidEnumValue { field: "ClientType", .. })
         ));
         assert!(Connect::deserialize(&CONNECT_VECTOR[..20]).is_err());
+    }
+
+    #[test]
+    fn compressed_packet_frame_round_trip() {
+        // WorldSettings (20) is a zstd packet: the framed payload must not
+        // be the raw payload, and must decode back to it.
+        let payload = vec![0x00u8; 512];
+        let frame = encode_packet_frame(ids::WORLD_SETTINGS, &payload);
+        let mut dec = crate::frame::FrameDecoder::new();
+        dec.feed(&frame);
+        let (id, raw) = dec.next_frame().unwrap().unwrap();
+        assert_eq!(id, ids::WORLD_SETTINGS);
+        assert_ne!(raw, payload);
+        assert_eq!(decode_packet_payload(id, &raw).unwrap(), payload);
+        // An uncompressed packet passes through untouched.
+        assert!(!is_compressed(ids::CONNECT));
+        assert!(is_compressed(ids::WORLD_SETTINGS));
     }
 
     #[test]

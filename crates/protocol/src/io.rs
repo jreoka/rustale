@@ -18,6 +18,7 @@ pub enum ProtoError {
     NonCanonicalLayout { field: &'static str },
     InvalidEnumValue { field: &'static str, value: u32 },
     FrameTooLarge { len: usize },
+    DecompressionFailed,
     TrailingBytes { extra: usize },
 }
 
@@ -177,6 +178,20 @@ impl Writer {
         self.write_var_int(data.len() as u32);
         self.buf.extend_from_slice(data);
         Ok(())
+    }
+
+    /// Pack a run of booleans into ceil(n/8) bytes, LSB first — the
+    /// reference serializers bit-pack consecutive fixed-block bools.
+    pub fn write_bool_bits(&mut self, bools: &[bool]) {
+        for chunk in bools.chunks(8) {
+            let mut byte = 0u8;
+            for (i, b) in chunk.iter().enumerate() {
+                if *b {
+                    byte |= 1 << i;
+                }
+            }
+            self.buf.push(byte);
+        }
     }
 
     /// Reserve a 4-byte offset slot; returns its position for later patching.

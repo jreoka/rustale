@@ -11,7 +11,7 @@ pub mod session;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use hytale_protocol::FrameDecoder;
+use hytale_protocol::{decode_packet_payload, encode_packet_frame, FrameDecoder};
 use quinn::{Endpoint, VarInt};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
@@ -96,10 +96,18 @@ async fn handle_stream(
                 decoder.feed(&buf[..n]);
                 loop {
                     match decoder.next_frame() {
-                        Ok(Some((packet_id, payload))) => {
+                        Ok(Some((packet_id, raw_payload))) => {
+                            let payload = match decode_packet_payload(packet_id, &raw_payload) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    eprintln!("[server] payload decode failed for {packet_id}: {e}");
+                                    return;
+                                }
+                            };
                             let outcome = session.lock().await.handle(packet_id, &payload);
-                            for frame in &outcome.frames {
-                                if let Err(e) = send.write_all(frame).await {
+                            for (out_id, out_payload) in &outcome.packets {
+                                let frame = encode_packet_frame(*out_id, out_payload);
+                                if let Err(e) = send.write_all(&frame).await {
                                     eprintln!("[server] write failed: {e}");
                                     return;
                                 }

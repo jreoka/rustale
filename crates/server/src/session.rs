@@ -442,7 +442,9 @@ impl Session {
             self.view_radius_chunks(),
         );
         // The join burst, in the reference's onFinishPlayerJoining order.
-        out.packets.push((ids::VIEW_RADIUS, ViewRadius { value: 32 * 32 }.serialize()));
+        // ViewRadius is declared Channel(Chunks): the client rejects it on
+        // the Default channel, so it rides the chunk stream.
+        out.chunk_packets.push((ids::VIEW_RADIUS, ViewRadius { value: 32 * 32 }.serialize()));
         out.packets.push((ids::SET_ENTITY_SEED, SetEntitySeed { entity_seed: 0 }.serialize()));
         out.packets.push((ids::SET_CLIENT_ID, SetClientId { client_id: 1 }.serialize()));
         out.packets
@@ -614,7 +616,6 @@ mod tests {
         assert_eq!(
             burst,
             vec![
-                ids::VIEW_RADIUS,
                 ids::SET_ENTITY_SEED,
                 ids::SET_CLIENT_ID,
                 ids::SET_TIME_DILATION,
@@ -628,9 +629,11 @@ mod tests {
         );
         assert_eq!(s.phase(), Phase::AwaitClientReady);
         // The flat world streams with the join burst (radius was 12
-        // chunks (384 blocks): (24)^2 columns * (1 heightmap + 10 sections)).
-        assert_eq!(out.chunk_packets.len(), 24 * 24 * 11);
-        assert_eq!(out.chunk_packets[0].0, ids::SET_CHUNK_HEIGHTMAP);
+        // chunks (384 blocks): (24)^2 columns * (1 heightmap + 10 sections)),
+        // preceded by ViewRadius, which is a Chunks-channel packet.
+        assert_eq!(out.chunk_packets.len(), 24 * 24 * 11 + 1);
+        assert_eq!(out.chunk_packets[0].0, ids::VIEW_RADIUS);
+        assert_eq!(out.chunk_packets[1].0, ids::SET_CHUNK_HEIGHTMAP);
 
         // ClientReady then only flips the phase; nothing more is sent.
         let out = s.handle(ids::CLIENT_READY, &[0b01]);

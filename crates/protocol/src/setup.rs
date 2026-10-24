@@ -431,18 +431,33 @@ fn block_types_init_packet() -> Vec<u8> {
     w.buf
 }
 
+/// UpdateBlockHitboxes (41) with id 0 = one full-cube hitbox. BlockType
+/// Hitbox/InteractionHitbox indexes point at 0 in our blocks; the store
+/// must not be empty when the client resolves them during preparation.
+fn block_hitboxes_init_packet() -> Vec<u8> {
+    let mut w = Writer::new();
+    w.write_u8(0x01); // null bits: dict present
+    w.write_u8(0); // Type = Init
+    w.write_i32(0); // MaxId
+    w.write_var_int(1); // dict: one entry
+    w.write_i32(0); // key 0
+    w.write_var_int(1); // hitbox array: one box
+    for v in [0.0f32, 0.0, 0.0, 1.0, 1.0, 1.0] {
+        w.write_f32(v);
+    }
+    w.buf
+}
+
 /// All 52 store Init packets as (packet_id, payload) pairs, in ID order.
-/// Every store is empty except BlockTypes, which carries the two blocks
-/// the flat world needs.
+/// Every store is empty except BlockTypes (the two flat-world blocks)
+/// and BlockHitboxes (the full-cube hitbox they reference).
 pub fn empty_registry_init_packets() -> Vec<(i32, Vec<u8>)> {
     UPDATE_SPECS
         .iter()
-        .map(|s| {
-            if s.id == 40 {
-                (s.id, block_types_init_packet())
-            } else {
-                (s.id, serialize_empty_init(s))
-            }
+        .map(|s| match s.id {
+            40 => (s.id, block_types_init_packet()),
+            41 => (s.id, block_hitboxes_init_packet()),
+            _ => (s.id, serialize_empty_init(s)),
         })
         .collect()
 }

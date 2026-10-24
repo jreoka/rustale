@@ -484,6 +484,14 @@ impl Session {
             .serialize(),
         ));
         self.phase = Phase::AwaitClientReady;
+        // The reference world's chunk system starts streaming as soon as
+        // the player is added; it does not wait for ClientReady. Sending
+        // the spawn area now also breaks any wait cycle where the client
+        // only readies up once it has terrain.
+        if !self.chunks_sent {
+            self.chunks_sent = true;
+            self.stream_flat_world(out);
+        }
     }
 
     fn on_client_ready(&mut self, payload: &[u8], out: &mut SessionOutcome) {

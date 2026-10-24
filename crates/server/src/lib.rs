@@ -71,13 +71,24 @@ pub async fn serve(endpoint: Endpoint) {
     }
 }
 
+/// Server->client auxiliary streams, identified by their QUIC stream IDs
+/// exactly as in the reference transport: the first server-initiated uni
+/// stream is Chunks (id 3), the second is WorldMap (id 7). We only ever
+/// open Chunks.
+#[derive(Default)]
+struct AuxStreams {
+    chunks: Option<quinn::SendStream>,
+}
+
 async fn handle_connection(conn: quinn::Connection) {
     let session = Arc::new(tokio::sync::Mutex::new(Session::new()));
+    let aux = Arc::new(tokio::sync::Mutex::new(AuxStreams::default()));
     while let Ok((send, recv)) = conn.accept_bi().await {
         let session = session.clone();
+        let aux = aux.clone();
         let conn = conn.clone();
         tokio::spawn(async move {
-            handle_stream(conn, send, recv, session).await;
+            handle_stream(conn, send, recv, session, aux).await;
         });
     }
 }
@@ -87,6 +98,7 @@ async fn handle_stream(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     session: Arc<tokio::sync::Mutex<Session>>,
+    aux: Arc<tokio::sync::Mutex<AuxStreams>>,
 ) {
     let mut decoder = FrameDecoder::new();
     let mut buf = vec![0u8; 64 * 1024];
@@ -110,6 +122,26 @@ async fn handle_stream(
                                 if let Err(e) = send.write_all(&frame).await {
                                     eprintln!("[server] write failed: {e}");
                                     return;
+                                }
+                            }
+                            if !outcome.chunk_packets.is_empty() {
+                                let mut aux = aux.lock().await;
+                                if aux.chunks.is_none() {
+                                    match conn.open_uni().await {
+                                        Ok(stream) => aux.chunks = Some(stream),
+                                        Err(e) => {
+                                            eprintln!("[server] cannot open chunks stream: {e}");
+                                            return;
+                                        }
+                                    }
+                                }
+                                let chunks = aux.chunks.as_mut().unwrap();
+                                for (out_id, out_payload) in &outcome.chunk_packets {
+                                    let frame = encode_packet_frame(*out_id, out_payload);
+                                    if let Err(e) = chunks.write_all(&frame).await {
+                                        eprintln!("[server] chunks write failed: {e}");
+                                        return;
+                                    }
                                 }
                             }
                             if let Some(code) = outcome.close {

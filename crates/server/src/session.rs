@@ -15,9 +15,27 @@ use hytale_protocol::setup::{
     empty_registry_init_packets, ConnectAccept, RequestAssets, ServerInfo, ViewRadius,
     WorldLoadProgress, WorldSettings,
 };
+use hytale_protocol::world::{
+    uniform_section_data, ClientReady, JoinWorld, SetChunk, SetChunkHeightmap, SetClientId,
+    SetEntitySeed, SetTimeDilation, SetUpdateRate, UpdateFeatures, UpdatePostFxSettings,
+    UpdateSunSettings, WorldGameplayConfig, HEIGHT_SECTIONS,
+};
 use hytale_protocol::{Connect, FormattedMessage, InsecurePlayerOptions, ServerDisconnect};
 
 use crate::close_code;
+
+/// The single world this server hosts, for now. Fixed UUID so the client
+/// sees a stable world identity across restarts.
+pub const WORLD_UUID: [u8; 16] = *b"HytaleRustWrld01";
+/// Sections 0 and 1 are solid; the walkable surface is the top of
+/// section 1, y = 63.
+pub const GROUND_TOP_Y: i32 = 63;
+/// Block id used for the ground sections. TODO: this must match the
+/// BlockType registry sent during setup; the registry is still empty,
+/// so visible ground waits on the BlockType transcription work.
+pub const GROUND_BLOCK_ID: i32 = 1;
+/// Cap on chunk columns streamed per axis, whatever the client asks for.
+pub const MAX_CHUNK_RADIUS: i32 = 12;
 
 #[derive(Default, PartialEq, Clone, Copy, Debug)]
 pub enum Phase {
@@ -26,13 +44,16 @@ pub enum Phase {
     AwaitIdentity,
     AwaitSetup,
     AwaitFinalize,
+    AwaitClientReady,
     InWorld,
 }
 
 #[derive(Default)]
 pub struct SessionOutcome {
-    /// (packet_id, payload) pairs to send, in order.
+    /// (packet_id, payload) pairs to send on the Default stream, in order.
     pub packets: Vec<(i32, Vec<u8>)>,
+    /// (packet_id, payload) pairs to send on the Chunks stream, in order.
+    pub chunk_packets: Vec<(i32, Vec<u8>)>,
     /// If set, close the connection with this QUIC application error code
     /// after the packets above have been written.
     pub close: Option<u32>,
@@ -46,6 +67,7 @@ pub struct Session {
     uuid: Option<[u8; 16]>,
     view_radius_blocks: Option<i32>,
     sent_assets: bool,
+    chunks_sent: bool,
 }
 
 impl Default for Session {
@@ -56,6 +78,7 @@ impl Default for Session {
             uuid: None,
             view_radius_blocks: None,
             sent_assets: false,
+            chunks_sent: false,
         }
     }
 }
@@ -109,8 +132,9 @@ impl Session {
                 Err(e) => eprintln!("[server] undecodable ViewRadius: {e}"),
             },
             ids::SETUP_FINALIZE => self.on_setup_finalize(&mut out),
+            ids::CLIENT_READY => self.on_client_ready(payload, &mut out),
             other => {
-                if self.phase == Phase::InWorld {
+                if matches!(self.phase, Phase::InWorld | Phase::AwaitClientReady) {
                     println!("[server] in-world packet id={other} ({} bytes)", payload.len());
                 } else {
                     self.unexpected(&mut out, other);
@@ -230,11 +254,113 @@ impl Session {
             return;
         }
         println!(
-            "[server] SetupFinalize: {} is in the world (view radius: {:?} chunks)",
+            "[server] SetupFinalize: {} joins the world (view radius: {:?} chunks)",
             self.username.as_deref().unwrap_or("?"),
             self.view_radius_chunks(),
         );
-        self.phase = Phase::InWorld;
+        // The join burst, in the reference's onFinishPlayerJoining order.
+        out.packets.push((ids::VIEW_RADIUS, ViewRadius { value: 32 * 32 }.serialize()));
+        out.packets.push((ids::SET_ENTITY_SEED, SetEntitySeed { entity_seed: 0 }.serialize()));
+        out.packets.push((ids::SET_CLIENT_ID, SetClientId { client_id: 1 }.serialize()));
+        out.packets
+            .push((ids::SET_TIME_DILATION, SetTimeDilation { time_dilation: 1.0 }.serialize()));
+        out.packets.push((
+            ids::UPDATE_FEATURES,
+            UpdateFeatures { features: Some(vec![]) }.serialize().unwrap_or_default(),
+        ));
+        out.packets.push((
+            ids::UPDATE_SUN_SETTINGS,
+            UpdateSunSettings { height_percentage: 0.75, angle_radians: 0.6 }.serialize(),
+        ));
+        out.packets.push((
+            ids::UPDATE_POST_FX_SETTINGS,
+            UpdatePostFxSettings {
+                global_intensity: 1.0,
+                power: 1.0,
+                sunshaft_scale: 1.0,
+                sun_intensity: 1.0,
+                sunshaft_intensity: 1.0,
+            }
+            .serialize(),
+        ));
+        out.packets.push((
+            ids::WORLD_GAMEPLAY_CONFIG,
+            WorldGameplayConfig::default().serialize(),
+        ));
+        out.packets
+            .push((ids::SET_UPDATE_RATE, SetUpdateRate { updates_per_second: 20 }.serialize()));
+        out.packets.push((
+            ids::JOIN_WORLD,
+            JoinWorld {
+                clear_world: true,
+                fade_in_out: true,
+                world_uuid: WORLD_UUID,
+                min_section_y: Some(0),
+                max_section_y: Some(HEIGHT_SECTIONS - 1),
+            }
+            .serialize(),
+        ));
+        self.phase = Phase::AwaitClientReady;
+    }
+
+    fn on_client_ready(&mut self, payload: &[u8], out: &mut SessionOutcome) {
+        let ready = match ClientReady::deserialize(payload) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[server] undecodable ClientReady: {e}");
+                return;
+            }
+        };
+        println!(
+            "[server] ClientReady: chunks={} gameplay={}",
+            ready.ready_for_chunks, ready.ready_for_gameplay
+        );
+        if self.phase == Phase::AwaitClientReady {
+            self.phase = Phase::InWorld;
+        }
+        if ready.ready_for_chunks && !self.chunks_sent {
+            self.chunks_sent = true;
+            self.stream_flat_world(out);
+        }
+    }
+
+    /// Queue the flat test world on the Chunks stream: for every column in
+    /// radius around spawn, a heightmap and all 10 sections (two solid
+    /// ground sections, the rest air with null data).
+    fn stream_flat_world(&self, out: &mut SessionOutcome) {
+        let radius = self
+            .view_radius_chunks()
+            .unwrap_or(8)
+            .clamp(1, MAX_CHUNK_RADIUS);
+        let ground_data = uniform_section_data(GROUND_BLOCK_ID);
+        let mut columns = 0;
+        for cx in -radius..radius {
+            for cz in -radius..radius {
+                out.chunk_packets.push((
+                    ids::SET_CHUNK_HEIGHTMAP,
+                    SetChunkHeightmap::uniform(cx, cz, GROUND_TOP_Y).serialize(),
+                ));
+                for sy in 0..HEIGHT_SECTIONS {
+                    let chunk = if sy <= 1 {
+                        SetChunk {
+                            x: cx,
+                            y: sy,
+                            z: cz,
+                            local_light: None,
+                            global_light: None,
+                            data: Some(ground_data.clone()),
+                        }
+                    } else {
+                        SetChunk::air(cx, sy, cz)
+                    };
+                    if let Ok(payload) = chunk.serialize() {
+                        out.chunk_packets.push((ids::SET_CHUNK, payload));
+                    }
+                }
+                columns += 1;
+            }
+        }
+        println!("[server] queued flat world: {columns} columns, radius {radius}");
     }
 }
 
@@ -292,8 +418,33 @@ mod tests {
         assert_eq!(s.phase(), Phase::AwaitFinalize);
 
         let out = s.handle(ids::SETUP_FINALIZE, &[]);
-        assert!(out.packets.is_empty());
+        let burst: Vec<i32> = out.packets.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            burst,
+            vec![
+                ids::VIEW_RADIUS,
+                ids::SET_ENTITY_SEED,
+                ids::SET_CLIENT_ID,
+                ids::SET_TIME_DILATION,
+                ids::UPDATE_FEATURES,
+                ids::UPDATE_SUN_SETTINGS,
+                ids::UPDATE_POST_FX_SETTINGS,
+                ids::WORLD_GAMEPLAY_CONFIG,
+                ids::SET_UPDATE_RATE,
+                ids::JOIN_WORLD,
+            ]
+        );
+        assert_eq!(s.phase(), Phase::AwaitClientReady);
+
+        // ClientReady with chunks flag streams the flat world.
+        let out = s.handle(ids::CLIENT_READY, &[0b01]);
         assert_eq!(s.phase(), Phase::InWorld);
+        // radius was 12 chunks (384 blocks): (24)^2 columns * (1 heightmap + 10 sections)
+        assert_eq!(out.chunk_packets.len(), 24 * 24 * 11);
+        assert_eq!(out.chunk_packets[0].0, ids::SET_CHUNK_HEIGHTMAP);
+        // A second ClientReady sends nothing more.
+        let out = s.handle(ids::CLIENT_READY, &[0b11]);
+        assert!(out.chunk_packets.is_empty());
     }
 
     #[test]

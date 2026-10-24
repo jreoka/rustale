@@ -71,3 +71,39 @@ Any unexpected packet during initial/setup -> disconnect with
   null required-assets and an empty registry, and what it does in a world
   with no block types defined. That is the milestone-1 test on real
   hardware.
+
+## 3. World entry (World.onFinishPlayerJoining) — implemented in milestone 2
+
+Channels are raw QUIC stream IDs, as in the reference quiche transport:
+Default = the client's first bidirectional stream (id 0), Chunks = the
+first server-initiated unidirectional stream (id 3), WorldMap = the
+second (id 7). No channel header bytes exist; the stream id is the
+channel. SetChunk/SetChunkHeightmap ride Chunks; everything else in the
+join burst rides Default.
+
+On SetupFinalize the server sends, in order: `ViewRadius` (server max),
+`SetEntitySeed` (160), `SetClientId` (100), `SetTimeDilation` (30),
+`UpdateFeatures` (31), `UpdateSunSettings` (360),
+`UpdatePostFxSettings` (361), `WorldGameplayConfig` (185 — its three
+structures serialize Combat, Player, World order), `SetUpdateRate` (29),
+`JoinWorld` (104) `{ ClearWorld, FadeInOut, WorldUuid, MinSectionY=0,
+MaxSectionY=9 }`.
+
+The client answers `ClientReady` (105) `{ ReadyForChunks,
+ReadyForGameplay }`; chunk streaming waits for ReadyForChunks. Chunks
+are 32x32 columns of 10 sections (32^3 blocks each, world height 320).
+`SetChunk` (131) `{ X, Y(section), Z, LocalLight?, GlobalLight?, Data? }`
+— Data is null for all-air sections; otherwise it is three palettes
+(block, filler, rotation), each a type byte (0=Empty, 1=HalfByte,
+2=Byte, 3=Short) plus palette data; the Byte palette is
+`[count i16][internal u8, external i32, count i16]*[one index byte per
+block]`. `SetChunkHeightmap` (132) carries a fixed 1024-entry i32 array.
+
+Our flat world: sections 0-1 solid (single block id via a uniform Byte
+palette), sections 2-9 air, heightmap 63, spawn column at origin.
+
+Known gaps for the next phases: the block id used for the ground (1) is
+not yet defined in the registry we send — the BlockType packet structure
+has 55 fields and must be transcribed from a real block's definition;
+and the player entity's own spawn/teleport sync (EntityUpdates) has not
+been surveyed yet.

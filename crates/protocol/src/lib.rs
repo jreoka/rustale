@@ -8,6 +8,7 @@ pub mod io;
 pub mod packets;
 pub mod setup;
 pub mod structures;
+pub mod world;
 
 pub use frame::{encode_frame, FrameDecoder};
 pub use io::{ProtoError, Reader, Result, Writer};

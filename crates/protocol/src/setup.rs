@@ -555,15 +555,53 @@ fn environments_init_packet() -> Vec<u8> {
     w.buf
 }
 
+/// A minimal Weather entry (126-byte header: 4 null-bit bytes, the
+/// Fog NearFar, reserved FogOptions, 24 slots), mirroring
+/// Weather.toPacket() with only Id and Fog set — every gradient map
+/// stays null. Null bits are in serialization order: Fog first, then
+/// the variable fields starting with Id.
+fn weather(id: &str) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.buf.extend_from_slice(&[0x05, 0, 0, 0]); // Fog + Id present
+    w.write_f32(10.0); // Fog.Near
+    w.write_f32(1000.0); // Fog.Far
+    w.buf.extend_from_slice(&[0; 18]); // FogOptions reserved, absent
+    debug_assert_eq!(w.position(), 30);
+    let slots: Vec<usize> = (0..24).map(|_| w.reserve_offset()).collect();
+    let var_start = w.position();
+    debug_assert_eq!(var_start, 126);
+    w.write_offset_at(slots[0], 0); // Id
+    for slot in &slots[1..] {
+        w.write_offset_at(*slot, -1);
+    }
+    w.write_string(id, 4096).expect("short id");
+    w.buf
+}
+
+/// UpdateWeathers (47) with one entry, id 0 — the world applies a
+/// current weather by index from the first frame, so the store must
+/// not be empty (the same built-in assumption as fluids/blocks).
+fn weathers_init_packet() -> Vec<u8> {
+    let mut w = Writer::new();
+    w.write_u8(0x01); // null bits: dict present
+    w.write_u8(0); // Type = Init
+    w.write_i32(1); // MaxId = next index
+    w.write_var_int(1);
+    w.write_i32(0);
+    w.buf.extend_from_slice(&weather("Clear"));
+    w.buf
+}
+
 /// All 52 store Init packets as (packet_id, payload) pairs, in ID order.
-/// Every store is empty except BlockTypes, BlockHitboxes, Fluids and
-/// Environments, which carry the entries the client assumes exist.
+/// Every store is empty except BlockTypes, BlockHitboxes, Fluids,
+/// Environments and Weathers, which carry entries the client assumes.
 pub fn empty_registry_init_packets() -> Vec<(i32, Vec<u8>)> {
     UPDATE_SPECS
         .iter()
         .map(|s| match s.id {
             40 => (s.id, block_types_init_packet()),
             41 => (s.id, block_hitboxes_init_packet()),
+            47 => (s.id, weathers_init_packet()),
             61 => (s.id, environments_init_packet()),
             83 => (s.id, fluids_init_packet()),
             _ => (s.id, serialize_empty_init(s)),

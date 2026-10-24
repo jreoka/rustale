@@ -472,9 +472,53 @@ impl Session {
             self.username.as_deref().unwrap_or("?"),
             self.view_radius_chunks(),
         );
-        // The join burst, in the reference's onFinishPlayerJoining order.
-        // ViewRadius is declared Channel(Chunks): the client rejects it on
-        // the Default channel, so it rides the chunk stream.
+        // addPlayer's own writes, in reference order: ClearChunks on
+        // the Chunks channel (clearWorld=true on the spawn path), then
+        // the PlayerConnect/module packets and the entity spawn, then
+        // JoinWorld. The onFinishPlayerJoining burst (ViewRadius,
+        // seed, client id, features, effects, gameplay config) waits
+        // for ClientReady — see on_client_ready.
+        out.chunk_packets.push((ids::CLEAR_CHUNKS, Vec::new()));
+        // VoiceModule.onPlayerConnect fires during addPlayer, before
+        // JoinWorld: the baseline client log shows VoiceConfig received
+        // just ahead of JoinWorldPacket.
+        out.packets.push((ids::VOICE_CONFIG, VoiceConfig::defaults().serialize()));
+        // The player's own entity spawn precedes JoinWorld, as in the
+        // reference (addPlayer adds the entity — firing sendPlayerSelf —
+        // before JoinWorld is written). Network id matches SetClientId.
+        out.packets.push((
+            ids::ENTITY_UPDATES,
+            rustale_protocol::entities::entity_updates_packet(
+                rustale_protocol::entities::player_spawn_update(
+                    1,
+                    self.username.as_deref().unwrap_or(""),
+                    [8.0, 66.0, 8.0],
+                ),
+            ),
+        ));
+        out.packets.push((
+            ids::JOIN_WORLD,
+            JoinWorld {
+                clear_world: true,
+                // The reference's spawn path passes fadeInOut=false
+                // (Universe spawn: addPlayer(..., TRUE, FALSE)); the
+                // official-server baseline client log confirms it:
+                // "ProcessJoinWorldPacket: FadeInOut is False".
+                fade_in_out: false,
+                world_uuid: WORLD_UUID,
+                min_section_y: Some(0),
+                max_section_y: Some(HEIGHT_SECTIONS - 1),
+            }
+            .serialize(),
+        ));
+        self.phase = Phase::AwaitClientReady;
+    }
+
+    /// The reference's onFinishPlayerJoining burst, sent once the
+    /// client reports ready: ViewRadius (Chunks channel), entity seed,
+    /// client id, time dilation, features, sun/post-fx, gameplay
+    /// config, update rate — then the chunk stream.
+    fn finish_joining(&mut self, out: &mut SessionOutcome) {
         out.chunk_packets.push((ids::VIEW_RADIUS, ViewRadius { value: 32 * 32 }.serialize()));
         out.packets.push((ids::SET_ENTITY_SEED, SetEntitySeed { entity_seed: 0 }.serialize()));
         out.packets.push((ids::SET_CLIENT_ID, SetClientId { client_id: 1 }.serialize()));
@@ -511,44 +555,6 @@ impl Session {
         ));
         out.packets
             .push((ids::SET_UPDATE_RATE, SetUpdateRate { updates_per_second: 20 }.serialize()));
-        // VoiceModule.onPlayerConnect fires during addPlayer, before
-        // JoinWorld: the baseline client log shows VoiceConfig received
-        // just ahead of JoinWorldPacket. It is the one named packet the
-        // official server sends that we did not.
-        out.packets.push((ids::VOICE_CONFIG, VoiceConfig::defaults().serialize()));
-        // The player's own entity spawn precedes JoinWorld, as in the
-        // reference (addPlayer adds the entity — firing sendPlayerSelf —
-        // before JoinWorld is written). Network id matches SetClientId.
-        out.packets.push((
-            ids::ENTITY_UPDATES,
-            rustale_protocol::entities::entity_updates_packet(
-                rustale_protocol::entities::player_spawn_update(
-                    1,
-                    self.username.as_deref().unwrap_or(""),
-                    [8.0, 66.0, 8.0],
-                ),
-            ),
-        ));
-        out.packets.push((
-            ids::JOIN_WORLD,
-            JoinWorld {
-                clear_world: true,
-                // The reference's spawn path passes fadeInOut=false
-                // (Universe spawn: addPlayer(..., TRUE, FALSE)); the
-                // official-server baseline client log confirms it:
-                // "ProcessJoinWorldPacket: FadeInOut is False".
-                fade_in_out: false,
-                world_uuid: WORLD_UUID,
-                min_section_y: Some(0),
-                max_section_y: Some(HEIGHT_SECTIONS - 1),
-            }
-            .serialize(),
-        ));
-        self.phase = Phase::AwaitClientReady;
-        // The reference world's chunk system starts streaming as soon as
-        // the player is added; it does not wait for ClientReady. Sending
-        // the spawn area now also breaks any wait cycle where the client
-        // only readies up once it has terrain.
         // Diagnostic toggle: RUSTALE_NO_CHUNKS=1 skips the chunk stream
         // entirely to isolate join processing from chunk content.
         if !self.chunks_sent && std::env::var_os("RUSTALE_NO_CHUNKS").is_none() {
@@ -571,10 +577,7 @@ impl Session {
         );
         if self.phase == Phase::AwaitClientReady {
             self.phase = Phase::InWorld;
-        }
-        if ready.ready_for_chunks && !self.chunks_sent {
-            self.chunks_sent = true;
-            self.stream_flat_world(out);
+            self.finish_joining(out);
         }
     }
 
@@ -680,6 +683,22 @@ mod tests {
         let burst: Vec<i32> = out.packets.iter().map(|(id, _)| *id).collect();
         assert_eq!(
             burst,
+            vec![ids::VOICE_CONFIG, ids::ENTITY_UPDATES, ids::JOIN_WORLD]
+        );
+        assert_eq!(s.phase(), Phase::AwaitClientReady);
+        // Only ClearChunks rides the chunk stream so far.
+        assert_eq!(out.chunk_packets.len(), 1);
+        assert_eq!(out.chunk_packets[0].0, ids::CLEAR_CHUNKS);
+
+        // ClientReady triggers the finish burst and the chunk stream
+        // (radius was 12 chunks (384 blocks): (24)^2 columns of
+        // SetColumn + 10 x (SetChunk + SetChunkEnvironments),
+        // preceded by ViewRadius, a Chunks-channel packet).
+        let out = s.handle(ids::CLIENT_READY, &[0b01]);
+        assert_eq!(s.phase(), Phase::InWorld);
+        let burst: Vec<i32> = out.packets.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            burst,
             vec![
                 ids::SET_ENTITY_SEED,
                 ids::SET_CLIENT_ID,
@@ -689,26 +708,17 @@ mod tests {
                 ids::UPDATE_POST_FX_SETTINGS,
                 ids::WORLD_GAMEPLAY_CONFIG,
                 ids::SET_UPDATE_RATE,
-                ids::VOICE_CONFIG,
-                ids::ENTITY_UPDATES,
-                ids::JOIN_WORLD,
             ]
         );
-        assert_eq!(s.phase(), Phase::AwaitClientReady);
-        // The flat world streams with the join burst (radius was 12
-        // chunks (384 blocks): (24)^2 columns * (1 heightmap + 10 sections)),
-        // preceded by ViewRadius, which is a Chunks-channel packet.
         assert_eq!(out.chunk_packets.len(), 24 * 24 * 21 + 1);
         assert_eq!(out.chunk_packets[0].0, ids::VIEW_RADIUS);
         assert_eq!(out.chunk_packets[1].0, ids::SET_COLUMN);
         assert_eq!(out.chunk_packets[2].0, ids::SET_CHUNK);
         assert_eq!(out.chunk_packets[3].0, ids::SET_CHUNK_ENVIRONMENTS);
 
-        // ClientReady then only flips the phase; nothing more is sent.
-        let out = s.handle(ids::CLIENT_READY, &[0b01]);
-        assert_eq!(s.phase(), Phase::InWorld);
-        assert!(out.chunk_packets.is_empty());
+        // A second ClientReady sends nothing more.
         let out = s.handle(ids::CLIENT_READY, &[0b11]);
+        assert!(out.packets.is_empty());
         assert!(out.chunk_packets.is_empty());
     }
 

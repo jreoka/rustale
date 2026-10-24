@@ -339,19 +339,27 @@ impl Session {
         out
     }
 
-    /// Mutual auth complete: ServerAuthToken, then the same accept burst
-    /// the insecure path uses.
+    /// Mutual auth complete: ServerAuthToken, then straight into setup.
+    /// (ConnectAccept exists only in the insecure flow — the reference
+    /// writes it solely from InitialPacketHandler's development path,
+    /// and the retail client rejects it here as unexpected. Verified
+    /// against the real client.)
     fn finish_auth(&mut self, out: &mut SessionOutcome, server_access_token: Option<String>) {
         let packet = ServerAuthToken { server_access_token, password_challenge: None };
         out.packets.push((ids::SERVER_AUTH_TOKEN, packet.serialize().unwrap_or_default()));
-        self.accept_burst(out);
+        self.setup_burst(out);
     }
 
-    /// ConnectAccept (no password -> no challenge), then WorldSettings +
-    /// ServerInfo as setup begins.
+    /// ConnectAccept (insecure flow only; no password -> no challenge),
+    /// then the setup burst.
     fn accept_burst(&mut self, out: &mut SessionOutcome) {
         let accept = ConnectAccept { password_challenge: None };
         out.packets.push((ids::CONNECT_ACCEPT, accept.serialize().unwrap_or_default()));
+        self.setup_burst(out);
+    }
+
+    /// WorldSettings + ServerInfo as setup begins.
+    fn setup_burst(&mut self, out: &mut SessionOutcome) {
         let settings = WorldSettings { required_assets: None };
         out.packets.push((ids::WORLD_SETTINGS, settings.serialize().unwrap_or_default()));
         let info = ServerInfo {
@@ -734,10 +742,8 @@ mod tests {
 
         let out = s.on_server_token(Some("server-access-jwt".to_string()));
         let sent: Vec<i32> = out.packets.iter().map(|(id, _)| *id).collect();
-        assert_eq!(
-            sent,
-            vec![ids::SERVER_AUTH_TOKEN, ids::CONNECT_ACCEPT, ids::WORLD_SETTINGS, ids::SERVER_INFO]
-        );
+        // No ConnectAccept in the authenticated flow (it is insecure-only).
+        assert_eq!(sent, vec![ids::SERVER_AUTH_TOKEN, ids::WORLD_SETTINGS, ids::SERVER_INFO]);
         assert_eq!(s.phase(), Phase::AwaitSetup);
 
         // And setup proceeds exactly like the insecure path.

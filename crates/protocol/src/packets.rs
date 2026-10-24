@@ -41,6 +41,7 @@ pub mod ids {
     pub const SET_CHUNK: i32 = 131;
     pub const SET_CHUNK_HEIGHTMAP: i32 = 132;
     pub const SET_COLUMN: i32 = 138;
+    pub const SET_CHUNK_ENVIRONMENTS: i32 = 134;
     pub const SET_ENTITY_SEED: i32 = 160;
     pub const WORLD_GAMEPLAY_CONFIG: i32 = 185;
     pub const UPDATE_SUN_SETTINGS: i32 = 360;

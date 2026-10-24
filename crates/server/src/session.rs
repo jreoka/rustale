@@ -18,7 +18,7 @@ use rustale_protocol::setup::{
     WorldLoadProgress, WorldSettings,
 };
 use rustale_protocol::world::{
-    uniform_section_data, ClientReady, JoinWorld, SetChunk, SetColumn, SetClientId,
+    uniform_section_data, ClientReady, JoinWorld, SetChunk, SetChunkEnvironments, SetColumn, SetClientId,
     SetEntitySeed, SetTimeDilation, SetUpdateRate, UpdateFeatures, UpdatePostFxSettings,
     UpdateSunSettings, WorldGameplayConfig, HEIGHT_SECTIONS,
 };
@@ -586,6 +586,10 @@ impl Session {
                     if let Ok(payload) = chunk.serialize() {
                         out.chunk_packets.push((ids::SET_CHUNK, payload));
                     }
+                    out.chunk_packets.push((
+                        ids::SET_CHUNK_ENVIRONMENTS,
+                        SetChunkEnvironments::uniform(cx, sy, cz, 0).serialize(),
+                    ));
                 }
                 columns += 1;
             }
@@ -668,9 +672,11 @@ mod tests {
         // The flat world streams with the join burst (radius was 12
         // chunks (384 blocks): (24)^2 columns * (1 heightmap + 10 sections)),
         // preceded by ViewRadius, which is a Chunks-channel packet.
-        assert_eq!(out.chunk_packets.len(), 24 * 24 * 11 + 1);
+        assert_eq!(out.chunk_packets.len(), 24 * 24 * 21 + 1);
         assert_eq!(out.chunk_packets[0].0, ids::VIEW_RADIUS);
         assert_eq!(out.chunk_packets[1].0, ids::SET_COLUMN);
+        assert_eq!(out.chunk_packets[2].0, ids::SET_CHUNK);
+        assert_eq!(out.chunk_packets[3].0, ids::SET_CHUNK_ENVIRONMENTS);
 
         // ClientReady then only flips the phase; nothing more is sent.
         let out = s.handle(ids::CLIENT_READY, &[0b01]);

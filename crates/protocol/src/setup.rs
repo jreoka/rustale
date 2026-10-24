@@ -523,15 +523,48 @@ fn fluids_init_packet() -> Vec<u8> {
     w.buf
 }
 
+/// A minimal WorldEnvironment (16-byte header: null bits + reserved
+/// WaterTint + 3 slots), mirroring Environment.toPacket(): only the
+/// Id is set.
+fn world_environment(id: &str) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.write_u8(0x02); // null bits: Id present (WaterTint is bit 0)
+    w.buf.extend_from_slice(&[0; 3]); // WaterTint reserved, absent
+    let slots: Vec<usize> = (0..3).map(|_| w.reserve_offset()).collect();
+    let var_start = w.position();
+    debug_assert_eq!(var_start, 16);
+    w.write_offset_at(slots[0], (w.position() - var_start) as i32);
+    w.write_string(id, 4096).expect("short id");
+    w.write_offset_at(slots[1], -1);
+    w.write_offset_at(slots[2], -1);
+    w.buf
+}
+
+/// UpdateEnvironments (61) with one entry, id 0 "Default" — the
+/// environment every chunk section references. RebuildMapGeometry is
+/// set on Init, as the reference generator does.
+fn environments_init_packet() -> Vec<u8> {
+    let mut w = Writer::new();
+    w.write_u8(0x01); // null bits: dict present
+    w.write_u8(0); // Type = Init
+    w.write_i32(1); // MaxId = next index
+    w.write_bool_bits(&[true]); // RebuildMapGeometry
+    w.write_var_int(1);
+    w.write_i32(0);
+    w.buf.extend_from_slice(&world_environment("Default"));
+    w.buf
+}
+
 /// All 52 store Init packets as (packet_id, payload) pairs, in ID order.
-/// Every store is empty except BlockTypes, BlockHitboxes and Fluids,
-/// which carry the built-in entries the client assumes exist.
+/// Every store is empty except BlockTypes, BlockHitboxes, Fluids and
+/// Environments, which carry the entries the client assumes exist.
 pub fn empty_registry_init_packets() -> Vec<(i32, Vec<u8>)> {
     UPDATE_SPECS
         .iter()
         .map(|s| match s.id {
             40 => (s.id, block_types_init_packet()),
             41 => (s.id, block_hitboxes_init_packet()),
+            61 => (s.id, environments_init_packet()),
             83 => (s.id, fluids_init_packet()),
             _ => (s.id, serialize_empty_init(s)),
         })

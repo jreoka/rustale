@@ -432,3 +432,31 @@ impl SetColumn {
         w.buf
     }
 }
+
+/// SetChunkEnvironments (134, zstd, Chunks channel): the environment
+/// section for one chunk section. X/Y/Z fixed, then the section blob
+/// inline (single variable field). Uniform mode blob = [0, varint id].
+pub struct SetChunkEnvironments {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub environments: Vec<u8>,
+}
+
+impl SetChunkEnvironments {
+    pub fn uniform(x: i32, y: i32, z: i32, environment_id: u32) -> Self {
+        let mut blob = vec![0u8]; // SectionEnvironmentsMode::Uniform
+        crate::io::write_var_int(&mut blob, environment_id);
+        SetChunkEnvironments { x, y, z, environments: blob }
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.write_i32(self.x);
+        w.write_i32(self.y);
+        w.write_i32(self.z);
+        w.write_var_int(self.environments.len() as u32);
+        w.buf.extend_from_slice(&self.environments);
+        w.buf
+    }
+}

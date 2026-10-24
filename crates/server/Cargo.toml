@@ -1,0 +1,11 @@
+[package]
+name = "hytale-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hytale-protocol = { path = "../protocol" }
+tokio = { workspace = true }
+quinn = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }

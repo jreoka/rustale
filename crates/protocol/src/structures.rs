@@ -102,7 +102,7 @@ impl FormattedMessage {
             w.write_offset_at(slot, -1);
         }
 
-        let mut write_opt_string = |w: &mut Writer, slot: usize, value: &Option<String>, max: usize| -> Result<()> {
+        let write_opt_string = |w: &mut Writer, slot: usize, value: &Option<String>, max: usize| -> Result<()> {
             match value {
                 Some(s) => {
                     w.write_offset_at(slot, (w.position() - var_start) as i32);

@@ -2,7 +2,7 @@
 //! World.onFinishPlayerJoining, and the chunk packets. Chunk geometry:
 //! 32x32 columns, 10 sections of 32 blocks (world height 320).
 
-use crate::io::{ProtoError, Reader, Result, Writer};
+use crate::io::{ProtoError, Result, Writer};
 
 pub const CHUNK_SIZE: i32 = 32;
 pub const HEIGHT_SECTIONS: i32 = 10;
@@ -273,7 +273,7 @@ impl SetChunk {
         let global_slot = w.reserve_offset();
         let data_slot = w.reserve_offset();
         let var_start = w.position();
-        let mut write_field = |w: &mut Writer, slot: usize, value: &Option<Vec<u8>>| {
+        let write_field = |w: &mut Writer, slot: usize, value: &Option<Vec<u8>>| {
             match value {
                 Some(bytes) => {
                     w.write_offset_at(slot, (w.position() - var_start) as i32);
@@ -341,6 +341,7 @@ impl SetChunkHeightmap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::Reader;
 
     #[test]
     fn join_world_layout() {

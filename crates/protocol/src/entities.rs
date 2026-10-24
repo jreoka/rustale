@@ -34,8 +34,9 @@ pub fn player_spawn_update(network_id: i32, username: &str, position: [f64; 3]) 
     let mut updates: Vec<u8> = Vec::new();
     let mut count: u32 = 0;
 
-    // InteractableUpdate: empty struct.
-    component(&mut updates, ct::INTERACTABLE, &[]);
+    // InteractableUpdate: one nullable string (InteractionHint), null —
+    // a lone null-bits byte (single variable field writes inline).
+    component(&mut updates, ct::INTERACTABLE, &[0]);
     count += 1;
 
     // NameplateUpdate: the text inline (single variable field).
@@ -133,11 +134,11 @@ mod tests {
     #[test]
     fn player_spawn_packet_has_pinned_layout() {
         let update = player_spawn_update(1, "jreoka", [8.0, 66.0, 8.0]);
-        // 13-byte EntityUpdate header + count + 90 bytes of components
+        // 13-byte EntityUpdate header + count + 91 bytes of components
         // for a 6-char name (see module docs / sendPlayerSelf order).
-        assert_eq!(update.len(), 13 + 1 + 90);
+        assert_eq!(update.len(), 13 + 1 + 91);
         let packet = entity_updates_packet(update);
-        assert_eq!(packet.len(), 9 + 1 + 104);
+        assert_eq!(packet.len(), 9 + 1 + 105);
         assert_eq!(packet[0], 0x02);
     }
 }

@@ -508,7 +508,11 @@ impl Session {
             ids::JOIN_WORLD,
             JoinWorld {
                 clear_world: true,
-                fade_in_out: true,
+                // The reference's spawn path passes fadeInOut=false
+                // (Universe spawn: addPlayer(..., TRUE, FALSE)); the
+                // official-server baseline client log confirms it:
+                // "ProcessJoinWorldPacket: FadeInOut is False".
+                fade_in_out: false,
                 world_uuid: WORLD_UUID,
                 min_section_y: Some(0),
                 max_section_y: Some(HEIGHT_SECTIONS - 1),

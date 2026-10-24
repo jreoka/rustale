@@ -23,9 +23,31 @@ use rustale_protocol::world::{
     UpdateSunSettings, WorldGameplayConfig, HEIGHT_SECTIONS,
 };
 use rustale_protocol::{
-    AuthGrant, AuthToken, Connect, FormattedMessage, InsecurePlayerOptions, ServerAuthToken,
+    Asset, AuthGrant, AuthToken, Connect, FormattedMessage, InsecurePlayerOptions, ServerAuthToken,
     ServerDisconnect,
 };
+
+/// The stock pack's common-asset index (`<sha256> <path>` per line),
+/// embedded from the client's own install. WorldSettings declares these
+/// as required; the client mounts the files it already has by hash,
+/// which is what makes its texture/model asset lookups resolve.
+fn required_assets() -> &'static [Asset] {
+    static ASSETS: std::sync::OnceLock<Vec<Asset>> = std::sync::OnceLock::new();
+    ASSETS.get_or_init(|| {
+        let index = include_str!("../assets/CommonAssetsIndex.hashes");
+        index
+            .lines()
+            .filter_map(|line| {
+                let (hash, name) = line.split_once(' ')?;
+                if hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    Some(Asset { hash: hash.to_string(), name: name.trim().to_string() })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    })
+}
 
 use crate::auth::JwtValidator;
 use crate::close_code;
@@ -360,7 +382,7 @@ impl Session {
 
     /// WorldSettings + ServerInfo as setup begins.
     fn setup_burst(&mut self, out: &mut SessionOutcome) {
-        let settings = WorldSettings { required_assets: None };
+        let settings = WorldSettings { required_assets: Some(required_assets().to_vec()) };
         out.packets.push((ids::WORLD_SETTINGS, settings.serialize().unwrap_or_default()));
         let info = ServerInfo {
             server_name: Some("Rustale".to_string()),
@@ -409,16 +431,31 @@ impl Session {
         }
         match RequestAssets::deserialize(payload) {
             Ok(req) => {
-                let held = req.assets.map(|a| a.len()).unwrap_or(0);
-                println!("[server] RequestAssets: client holds {held} common assets");
+                let held: std::collections::HashSet<&str> = req
+                    .assets
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|a| a.hash.as_str())
+                    .collect();
+                let missing = required_assets().iter().filter(|a| !held.contains(a.hash.as_str())).count();
+                println!(
+                    "[server] RequestAssets: client holds {} of {} required assets ({missing} missing)",
+                    held.len(),
+                    required_assets().len(),
+                );
+                if missing > 0 {
+                    eprintln!("[server] WARNING: client lacks {missing} assets we cannot serve (no local pack files)");
+                }
             }
             Err(e) => {
                 eprintln!("[server] undecodable RequestAssets: {e} (continuing)");
             }
         }
-        // We send no common-asset files (client assumed to hold the stock
-        // pack), then the whole registry as empty Init packets, then the
-        // world-load completion pair.
+        // Any still-missing assets would be sent as AssetInitialize/
+        // AssetPart here; with a matching stock install the client holds
+        // everything and nothing is sent. Then the registry Init packets
+        // and the world-load completion pair.
         self.sent_assets = true;
         out.packets.extend(empty_registry_init_packets());
         let progress = WorldLoadProgress {

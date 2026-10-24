@@ -382,35 +382,61 @@ fn block_textures(face: &str) -> Vec<u8> {
     w.buf
 }
 
-fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, cube_textures: bool) -> Vec<u8> {
+/// A ModelTexture entry: null bits + Weight, then the texture inline
+/// (its single variable field).
+fn model_texture(texture: &str) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.write_u8(0x01); // Texture present
+    w.write_f32(1.0); // Weight
+    w.write_string(texture, 4096).expect("short texture name");
+    w.buf
+}
+
+fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: bool, support: bool) -> Vec<u8> {
+    // Mirror the reference BlockType.toPacket() materialization: Tint,
+    // BiomeTint, ShaderEffect, ModelTexture and CubeTextures are ALWAYS
+    // present in a real packet (defaults when unset) — the client's
+    // preparation dereferences them.
     let mut fixed = [0u8; 177];
-    fixed[0] = 0x80; // null bits: Name present
-    if cube_textures {
-        fixed[1] = 0x40; // null bits byte 1: CubeTextures present
-    }
+    fixed[0] = 0x98; // null bits: Name | Tint | BiomeTint present
+    fixed[1] = 0x45 | if support { 0x10 } else { 0 }; // ShaderEffect | ModelTexture | CubeTextures (| Support)
+    fixed[4] = unknown as u8;
     fixed[5] = draw_type;
     fixed[6] = material;
     fixed[7] = opacity;
     fixed[16..20].copy_from_slice(&1.0f32.to_le_bytes()); // ModelScale
     fixed[20..24].copy_from_slice(&1.0f32.to_le_bytes()); // ModelAnimationSpeed
+    fixed[61..85].fill(0xFF); // Tint: six i32 at -1
+    // BiomeTint at 85..109 stays zeroed (the config defaults are 0).
+    fixed[173..177].copy_from_slice(&i32::MIN.to_le_bytes()); // TransitionToTag = TAG_NOT_FOUND
     let mut w = Writer::new();
     w.buf.extend_from_slice(&fixed);
-    // Slots in variable-field order: Name is index 1, CubeTextures 8.
+    // Slots in variable-field order: Name 1, ShaderEffect 2,
+    // ModelTexture 4, Support 6, CubeTextures 8.
     let slots: Vec<usize> = (0..25).map(|_| w.reserve_offset()).collect();
     let var_start = w.position();
     debug_assert_eq!(var_start, 277);
+    let present = [1usize, 2, 4, 8];
     for (i, slot) in slots.iter().enumerate() {
-        if i != 1 && !(cube_textures && i == 8) {
+        if !present.contains(&i) && !(support && i == 6) {
             w.write_offset_at(*slot, -1);
         }
     }
     w.write_offset_at(slots[1], (w.position() - var_start) as i32);
     w.write_string(name, 4096).expect("short name");
-    if cube_textures {
-        w.write_offset_at(slots[8], (w.position() - var_start) as i32);
-        w.write_var_int(1);
-        w.buf.extend_from_slice(&block_textures("Unknown"));
+    w.write_offset_at(slots[2], (w.position() - var_start) as i32);
+    w.write_var_int(1); // ShaderEffect = [None]
+    w.write_u8(0);
+    w.write_offset_at(slots[4], (w.position() - var_start) as i32);
+    w.write_var_int(1); // ModelTexture = [Unknown]
+    w.buf.extend_from_slice(&model_texture("BlockTextures/Unknown.png"));
+    if support {
+        w.write_offset_at(slots[6], (w.position() - var_start) as i32);
+        w.write_var_int(0); // Support = empty map (air needs none)
     }
+    w.write_offset_at(slots[8], (w.position() - var_start) as i32);
+    w.write_var_int(1); // CubeTextures = [Unknown]
+    w.buf.extend_from_slice(&block_textures("BlockTextures/Unknown.png"));
     w.buf
 }
 
@@ -425,9 +451,11 @@ fn block_types_init_packet() -> Vec<u8> {
     w.write_bool_bits(&[true; 4]);
     w.write_var_int(2);
     w.write_i32(0);
-    w.buf.extend_from_slice(&block_type("Empty", 0, 0, 3, false));
+    w.buf.extend_from_slice(&block_type("Empty", 0, 0, 3, false, true));
     w.write_i32(1);
-    w.buf.extend_from_slice(&block_type("Stone", 2, 1, 0, true));
+    // Id 1 is the canonical "Unknown" block in the reference registry
+    // (unknown flag set, solid cube) — and our flat world's ground.
+    w.buf.extend_from_slice(&block_type("Unknown", 2, 1, 0, true, false));
     w.buf
 }
 
@@ -491,17 +519,20 @@ mod tests {
         let (_, payload) = packets.iter().find(|(id, _)| *id == 40).unwrap();
         // nullbits(dict present) | Type=Init | MaxId=2 | 4 bool flags | count 2
         assert_eq!(&payload[..8], &[0x01, 0x00, 2, 0, 0, 0, 0x0F, 0x02]);
-        // Each entry: i32 key + 277-byte BlockType header + name string.
-        // Entry 0 at 8: key 0, header starts with the Name null bit.
+        // Each entry: i32 key + 277-byte BlockType header + var fields.
+        // Entry 0 at 8: key 0, header starts with the null bits
+        // (Name | Tint | BiomeTint), DrawType Empty, Tint all -1.
         assert_eq!(&payload[8..12], &0i32.to_le_bytes());
-        assert_eq!(payload[12], 0x80);
+        assert_eq!(payload[12], 0x98);
         assert_eq!(payload[12 + 5], 0); // DrawType Empty
-        // Entry 1 follows: 12 + 277 + (1 + 5) = 295.
-        assert_eq!(&payload[295..299], &1i32.to_le_bytes());
-        assert_eq!(payload[299 + 5], 2); // DrawType Cube
-        assert_eq!(payload[299 + 6], 1); // Material Solid
-        // Stone: 277 header + 6 name + 1 array count + 77 BlockTextures.
-        assert_eq!(payload.len(), 295 + 4 + 277 + 6 + 1 + 77);
+        assert_eq!(&payload[12 + 61..12 + 65], &[0xFF; 4]); // Tint top = -1
+        // Entry 0 is 504 bytes, so entry 1's key sits at 12 + 504 = 516:
+        // the canonical Unknown block (unknown flag set, solid cube).
+        assert_eq!(&payload[516..520], &1i32.to_le_bytes());
+        assert_eq!(payload[520 + 4], 1); // Unknown flag
+        assert_eq!(payload[520 + 5], 2); // DrawType Cube
+        assert_eq!(payload[520 + 6], 1); // Material Solid
+        assert_eq!(payload.len(), 516 + 4 + 505);
     }
 
     #[test]

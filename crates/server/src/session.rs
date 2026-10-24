@@ -19,6 +19,7 @@ use rustale_protocol::setup::{
 };
 use rustale_protocol::world::{
     uniform_section_data, ClientReady, JoinWorld, SetChunk, SetChunkEnvironments, SetColumn, SetClientId,
+    VoiceConfig,
     SetEntitySeed, SetTimeDilation, SetUpdateRate, UpdateFeatures, UpdatePostFxSettings,
     UpdateSunSettings, WorldGameplayConfig, HEIGHT_SECTIONS,
 };
@@ -481,7 +482,13 @@ impl Session {
             .push((ids::SET_TIME_DILATION, SetTimeDilation { time_dilation: 1.0 }.serialize()));
         out.packets.push((
             ids::UPDATE_FEATURES,
-            UpdateFeatures { features: Some(vec![]) }.serialize().unwrap_or_default(),
+            // The reference world's feature map defaults every
+            // ClientFeature to true (World: EnumMap initialized true).
+            UpdateFeatures {
+                features: Some(vec![(0, true), (1, true), (2, true), (3, true), (4, true)]),
+            }
+            .serialize()
+            .unwrap_or_default(),
         ));
         out.packets.push((
             ids::UPDATE_SUN_SETTINGS,
@@ -504,6 +511,11 @@ impl Session {
         ));
         out.packets
             .push((ids::SET_UPDATE_RATE, SetUpdateRate { updates_per_second: 20 }.serialize()));
+        // VoiceModule.onPlayerConnect fires during addPlayer, before
+        // JoinWorld: the baseline client log shows VoiceConfig received
+        // just ahead of JoinWorldPacket. It is the one named packet the
+        // official server sends that we did not.
+        out.packets.push((ids::VOICE_CONFIG, VoiceConfig::defaults().serialize()));
         // The player's own entity spawn precedes JoinWorld, as in the
         // reference (addPlayer adds the entity — firing sendPlayerSelf —
         // before JoinWorld is written). Network id matches SetClientId.
@@ -677,6 +689,7 @@ mod tests {
                 ids::UPDATE_POST_FX_SETTINGS,
                 ids::WORLD_GAMEPLAY_CONFIG,
                 ids::SET_UPDATE_RATE,
+                ids::VOICE_CONFIG,
                 ids::ENTITY_UPDATES,
                 ids::JOIN_WORLD,
             ]

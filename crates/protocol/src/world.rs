@@ -460,3 +460,40 @@ impl SetChunkEnvironments {
         w.buf
     }
 }
+
+/// VoiceConfig (452): the voice-chat configuration pushed on player
+/// connect. Fixed 17-byte block: two isolated bool bytes (bit-packed
+/// runs of one), codec byte, sample rate, channels, two distances,
+/// max packets/sec. Values mirror VoiceRouter.sendVoiceConfig with
+/// the module defaults the official server runs (32 / 4 blocks).
+pub struct VoiceConfig {
+    pub voice_enabled: bool,
+    pub max_hearing_distance: f32,
+    pub reference_distance: f32,
+    pub max_packets_per_second: u8,
+}
+
+impl VoiceConfig {
+    pub fn defaults() -> Self {
+        VoiceConfig {
+            voice_enabled: true,
+            max_hearing_distance: 32.0,
+            reference_distance: 4.0,
+            max_packets_per_second: 50,
+        }
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.write_bool_bits(&[self.voice_enabled]);
+        w.write_u8(0); // VoiceCodec::Opus
+        w.write_i32(48000);
+        w.write_u8(1); // mono
+        w.write_f32(self.max_hearing_distance);
+        w.write_f32(self.reference_distance);
+        w.write_bool_bits(&[true]); // SupportsVoiceStream
+        w.write_u8(self.max_packets_per_second);
+        debug_assert_eq!(w.buf.len(), 17);
+        w.buf
+    }
+}

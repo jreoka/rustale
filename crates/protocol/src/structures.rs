@@ -55,21 +55,22 @@ impl FormattedMessage {
 
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let mut w = Writer::new();
-        // Nullable fields in declaration order (13 bits over 2 bytes):
-        // raw_text, message_id, children, params, message_params, color,
-        // bold, italic, monospace, underlined, strikethrough, link, image.
+        // Null bits follow serialization order (13 bits over 2 bytes):
+        // the fixed-block nullable bools first, then the variable fields:
+        // bold, italic, monospace, underlined, strikethrough, raw_text,
+        // message_id, children, params, message_params, color, link, image.
         let present = [
+            self.bold.is_some(),
+            self.italic.is_some(),
+            self.monospace.is_some(),
+            self.underlined.is_some(),
+            self.strikethrough.is_some(),
             self.raw_text.is_some(),
             self.message_id.is_some(),
             self.children.is_some(),
             false, // params: not modelled
             false, // message_params: not modelled
             self.color.is_some(),
-            self.bold.is_some(),
-            self.italic.is_some(),
-            self.monospace.is_some(),
-            self.underlined.is_some(),
-            self.strikethrough.is_some(),
             self.link.is_some(),
             false, // image: not modelled
         ];
@@ -149,27 +150,27 @@ impl FormattedMessage {
             }
         };
         let mut msg = FormattedMessage {
-            bold: opt_bool(has(6), 2)?,
-            italic: opt_bool(has(7), 3)?,
-            monospace: opt_bool(has(8), 4)?,
-            underlined: opt_bool(has(9), 5)?,
-            strikethrough: opt_bool(has(10), 6)?,
+            bold: opt_bool(has(0), 2)?,
+            italic: opt_bool(has(1), 3)?,
+            monospace: opt_bool(has(2), 4)?,
+            underlined: opt_bool(has(3), 5)?,
+            strikethrough: opt_bool(has(4), 6)?,
             markup_enabled: r.u8_at(7)? != 0,
             ..Default::default()
         };
         // Slots: raw_text @8, message_id @12, children @16, params @20,
         // message_params @24, color @28, link @32, image @36; var start 40.
-        if has(0) {
+        if has(5) {
             if let Some(p) = r.var_offset(8, 40)? {
                 msg.raw_text = Some(r.string_at(p, 1_000_000, false)?.0);
             }
         }
-        if has(1) {
+        if has(6) {
             if let Some(p) = r.var_offset(12, 40)? {
                 msg.message_id = Some(r.string_at(p, 1_000_000, false)?.0);
             }
         }
-        if has(5) {
+        if has(10) {
             if let Some(p) = r.var_offset(28, 40)? {
                 msg.color = Some(r.string_at(p, 64, false)?.0);
             }
@@ -206,7 +207,7 @@ mod tests {
         // 40-byte header (2 null-bits + 5 bool bytes + markup + 8 slots),
         // then varint length + the key.
         assert_eq!(bytes.len(), 40 + 1 + 37);
-        assert_eq!(bytes[0], 0b0000_0010); // only message_id present
+        assert_eq!(bytes[0], 0b0100_0000); // only message_id present (bit 6)
         assert_eq!(bytes[1], 0);
         let parsed = FormattedMessage::deserialize_shallow(&bytes).unwrap();
         assert_eq!(parsed.message_id.as_deref(), Some("client.general.worldLoad.loadingWorld"));

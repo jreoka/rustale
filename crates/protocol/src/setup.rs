@@ -282,7 +282,7 @@ static UPDATE_SPECS: &[UpdateSpec] = &[
     UpdateSpec { id: 63, max_id: true, vars: &[D], bool_flags: 0 },    // FluidFX
     UpdateSpec { id: 64, max_id: false, vars: &[D], bool_flags: 0 },   // Translations
     UpdateSpec { id: 65, max_id: true, vars: &[D], bool_flags: 0 },    // SoundEvents
-    UpdateSpec { id: 66, max_id: true, vars: &[], bool_flags: 0 },     // Interactions
+    UpdateSpec { id: 66, max_id: true, vars: &[D], bool_flags: 0 },    // Interactions
     UpdateSpec { id: 67, max_id: true, vars: &[D], bool_flags: 0 },    // RootInteractions
     UpdateSpec { id: 68, max_id: false, vars: &[D], bool_flags: 0 },   // UnarmedInteractions
     UpdateSpec { id: 72, max_id: true, vars: &[D], bool_flags: 0 },    // EntityStatTypes
@@ -290,7 +290,7 @@ static UPDATE_SPECS: &[UpdateSpec] = &[
     UpdateSpec { id: 74, max_id: true, vars: &[D], bool_flags: 0 },    // HitboxCollisionConfig
     UpdateSpec { id: 75, max_id: true, vars: &[D], bool_flags: 0 },    // RepulsionConfig
     UpdateSpec { id: 76, max_id: false, vars: &[RD], bool_flags: 0 },  // ViewBobbing
-    UpdateSpec { id: 77, max_id: true, vars: &[D], bool_flags: 0 },   // CameraShake
+    UpdateSpec { id: 77, max_id: false, vars: &[D], bool_flags: 0 },   // CameraShake
     UpdateSpec { id: 78, max_id: false, vars: &[D], bool_flags: 0 },   // BlockGroups
     UpdateSpec { id: 79, max_id: true, vars: &[D], bool_flags: 0 },    // SoundSets
     UpdateSpec { id: 80, max_id: true, vars: &[D], bool_flags: 0 },    // AudioCategories
@@ -409,10 +409,14 @@ mod tests {
     }
 
     #[test]
-    fn update_interactions_has_no_nullbits() {
+    fn update_interactions_layout() {
+        // UpdateInteractions carries a nullable dictionary like the other
+        // stores (an early version of this test asserted the wrong,
+        // field-less shape — the generated constants show nullbits=1,
+        // FixedBlockSize=6, VariableFieldCount=1).
         let packets = empty_registry_init_packets();
         let (_, payload) = packets.iter().find(|(id, _)| *id == 66).unwrap();
-        assert_eq!(payload, &vec![0x00, 0, 0, 0, 0]); // Type + MaxId only
+        assert_eq!(payload, &vec![0x01, 0x00, 0, 0, 0, 0, 0x00]);
     }
 
     #[test]
@@ -425,5 +429,26 @@ mod tests {
         Asset { hash: "b".repeat(64), name: "Pack".to_string() }.serialize(&mut w).unwrap();
         let parsed = RequestAssets::deserialize(&w.buf).unwrap();
         assert_eq!(parsed.assets.unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod registry_layout_tests {
+    use super::*;
+
+    #[test]
+    fn interactions_and_camera_shake_layouts() {
+        // Regression: an audit of all 52 Init specs against the generated
+        // protocol constants (NullableBitFieldSize/FixedBlockSize/
+        // VariableFieldCount) found exactly these two wrong; the real
+        // client killed the connection with a deserialization error.
+        let packets = empty_registry_init_packets();
+        let get = |id: i32| packets.iter().find(|(i, _)| *i == id).unwrap().1.clone();
+        // UpdateInteractions (66): nullbits(1, dict present) + Type(1) +
+        // MaxId(4) + inline empty dict (varint 0) = 7 bytes.
+        assert_eq!(get(66), vec![0x01, 0x00, 0, 0, 0, 0, 0x00]);
+        // UpdateCameraShake (77): NO MaxId: nullbits(1) + Type(1) +
+        // inline empty dict = 3 bytes.
+        assert_eq!(get(77), vec![0x01, 0x00, 0x00]);
     }
 }

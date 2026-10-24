@@ -19,7 +19,7 @@ use rustale_protocol::setup::{
 };
 use rustale_protocol::world::{
     uniform_section_data, ClientReady, JoinWorld, SetChunk, SetChunkEnvironments, SetColumn, SetClientId,
-    VoiceConfig,
+    VoiceConfig, UpdateWorldMapSettings,
     SetEntitySeed, SetTimeDilation, SetUpdateRate, UpdateFeatures, UpdatePostFxSettings,
     UpdateSunSettings, WorldGameplayConfig, HEIGHT_SECTIONS,
 };
@@ -479,6 +479,12 @@ impl Session {
         // seed, client id, features, effects, gameplay config) waits
         // for ClientReady — see on_client_ready.
         out.chunk_packets.push((ids::CLEAR_CHUNKS, Vec::new()));
+        // The world-map tracker pushes its settings when a player is
+        // added; without them the client's map system has no scales.
+        out.packets.push((
+            ids::UPDATE_WORLD_MAP_SETTINGS,
+            UpdateWorldMapSettings::defaults().serialize(),
+        ));
         // VoiceModule.onPlayerConnect fires during addPlayer, before
         // JoinWorld: the baseline client log shows VoiceConfig received
         // just ahead of JoinWorldPacket.
@@ -683,7 +689,12 @@ mod tests {
         let burst: Vec<i32> = out.packets.iter().map(|(id, _)| *id).collect();
         assert_eq!(
             burst,
-            vec![ids::VOICE_CONFIG, ids::ENTITY_UPDATES, ids::JOIN_WORLD]
+            vec![
+                ids::UPDATE_WORLD_MAP_SETTINGS,
+                ids::VOICE_CONFIG,
+                ids::ENTITY_UPDATES,
+                ids::JOIN_WORLD,
+            ]
         );
         assert_eq!(s.phase(), Phase::AwaitClientReady);
         // Only ClearChunks rides the chunk stream so far.

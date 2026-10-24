@@ -497,3 +497,42 @@ impl VoiceConfig {
         w.buf
     }
 }
+
+/// UpdateWorldMapSettings (240): world-map configuration the tracker
+/// pushes when a player joins a world. One bit-packed bool byte
+/// (Enabled, teleport/marker toggles) + Default/Min/Max scale floats.
+pub struct UpdateWorldMapSettings {
+    pub enabled: bool,
+    pub allow_show_on_map_toggle: bool,
+    pub allow_compass_tracking_toggle: bool,
+    pub allow_creating_map_markers: bool,
+}
+
+impl UpdateWorldMapSettings {
+    pub fn defaults() -> Self {
+        UpdateWorldMapSettings {
+            enabled: true,
+            allow_show_on_map_toggle: true,
+            allow_compass_tracking_toggle: true,
+            allow_creating_map_markers: true,
+        }
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.write_bool_bits(&[
+            self.enabled,
+            false, // AllowTeleportToCoordinates
+            false, // AllowTeleportToMarkers
+            self.allow_show_on_map_toggle,
+            self.allow_compass_tracking_toggle,
+            self.allow_creating_map_markers,
+            false, // AllowRemovingOtherPlayersMarkers
+        ]);
+        w.write_f32(32.0); // DefaultScale
+        w.write_f32(2.0); // MinScale
+        w.write_f32(256.0); // MaxScale
+        debug_assert_eq!(w.buf.len(), 13);
+        w.buf
+    }
+}

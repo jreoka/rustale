@@ -437,12 +437,16 @@ impl ServerAuth {
             "sessionExpiresAt": state.session_expires_at,
         });
         if let Ok(text) = serde_json::to_string_pretty(&doc) {
-            if std::fs::write(path, text).is_ok() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            match std::fs::write(path, text) {
+                Ok(()) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+                    }
+                    println!("[auth] credentials saved to {}", path.display());
                 }
+                Err(e) => eprintln!("[auth] WARNING: could not save credentials to {}: {e}", path.display()),
             }
         }
     }

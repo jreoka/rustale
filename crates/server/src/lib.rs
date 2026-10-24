@@ -83,8 +83,18 @@ async fn build_auth_runtime(cert_der: &[u8]) -> Option<Arc<AuthRuntime>> {
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .expect("reqwest client");
-    let auth_file = std::env::var("RUSTALE_AUTH_FILE").unwrap_or_else(|_| "auth.json".to_string());
-    let server_auth = match ServerAuth::init(http.clone(), endpoints.clone(), Some(auth_file.into())).await {
+    // Default the credentials file next to the executable, not the
+    // working directory, so restarts find it no matter where the server
+    // is launched from. RUSTALE_AUTH_FILE overrides.
+    let auth_file = match std::env::var("RUSTALE_AUTH_FILE") {
+        Ok(p) => p.into(),
+        Err(_) => std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("auth.json")))
+            .unwrap_or_else(|| "auth.json".into()),
+    };
+    println!("[auth] credentials file: {}", auth_file.display());
+    let server_auth = match ServerAuth::init(http.clone(), endpoints.clone(), Some(auth_file)).await {
         Ok(a) => Arc::new(a),
         Err(e) => {
             eprintln!("[auth] FATAL: could not establish the server session: {e}");

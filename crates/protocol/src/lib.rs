@@ -3,6 +3,7 @@
 //! Hypixel code are included; layouts are re-implemented from the published
 //! definitions.
 
+pub mod entities;
 pub mod frame;
 pub mod io;
 pub mod packets;

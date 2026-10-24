@@ -504,6 +504,19 @@ impl Session {
         ));
         out.packets
             .push((ids::SET_UPDATE_RATE, SetUpdateRate { updates_per_second: 20 }.serialize()));
+        // The player's own entity spawn precedes JoinWorld, as in the
+        // reference (addPlayer adds the entity — firing sendPlayerSelf —
+        // before JoinWorld is written). Network id matches SetClientId.
+        out.packets.push((
+            ids::ENTITY_UPDATES,
+            rustale_protocol::entities::entity_updates_packet(
+                rustale_protocol::entities::player_spawn_update(
+                    1,
+                    self.username.as_deref().unwrap_or(""),
+                    [8.0, 66.0, 8.0],
+                ),
+            ),
+        ));
         out.packets.push((
             ids::JOIN_WORLD,
             JoinWorld {
@@ -664,6 +677,7 @@ mod tests {
                 ids::UPDATE_POST_FX_SETTINGS,
                 ids::WORLD_GAMEPLAY_CONFIG,
                 ids::SET_UPDATE_RATE,
+                ids::ENTITY_UPDATES,
                 ids::JOIN_WORLD,
             ]
         );

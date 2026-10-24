@@ -81,46 +81,62 @@ impl FormattedMessage {
         }
         w.buf.extend_from_slice(&null_bits);
         // Fixed block: the five nullable bools (byte reserved even when
-        // null), then markup_enabled. Total fixed block = 8 bytes,
-        // matching the generated FormattedMessage constants.
+        // null), then markup_enabled.
         for b in [self.bold, self.italic, self.monospace, self.underlined, self.strikethrough] {
             w.write_u8(b.unwrap_or(false) as u8);
         }
         w.write_u8(self.markup_enabled as u8);
 
-        // Structures have NO offset slots (that is the packet layout):
-        // present variable fields are written inline in declaration
-        // order — raw_text, message_id, children, [params],
-        // [message_params], color, link, [image]. Bracketed fields are
-        // not modelled and never present in messages we produce.
-        if let Some(s) = &self.raw_text {
-            w.write_string(s, 1_000_000)?;
+        // Offset slots for the 8 variable fields, in declaration order.
+        let raw_slot = w.reserve_offset();
+        let id_slot = w.reserve_offset();
+        let children_slot = w.reserve_offset();
+        let params_slot = w.reserve_offset();
+        let msg_params_slot = w.reserve_offset();
+        let color_slot = w.reserve_offset();
+        let link_slot = w.reserve_offset();
+        let image_slot = w.reserve_offset();
+        let var_start = w.position();
+        debug_assert_eq!(var_start, 40);
+        for slot in [params_slot, msg_params_slot, image_slot] {
+            w.write_offset_at(slot, -1);
         }
-        if let Some(s) = &self.message_id {
-            w.write_string(s, 1_000_000)?;
-        }
-        if let Some(children) = &self.children {
-            w.write_var_int(children.len() as u32);
-            for child in children {
-                let bytes = child.serialize()?;
-                w.buf.extend_from_slice(&bytes);
+
+        let write_opt_string = |w: &mut Writer, slot: usize, value: &Option<String>, max: usize| -> Result<()> {
+            match value {
+                Some(s) => {
+                    w.write_offset_at(slot, (w.position() - var_start) as i32);
+                    w.write_string(s, max)
+                }
+                None => {
+                    w.write_offset_at(slot, -1);
+                    Ok(())
+                }
             }
+        };
+        write_opt_string(&mut w, raw_slot, &self.raw_text, 1_000_000)?;
+        write_opt_string(&mut w, id_slot, &self.message_id, 1_000_000)?;
+        match &self.children {
+            Some(children) => {
+                w.write_offset_at(children_slot, (w.position() - var_start) as i32);
+                w.write_var_int(children.len() as u32);
+                for child in children {
+                    let bytes = child.serialize()?;
+                    w.buf.extend_from_slice(&bytes);
+                }
+            }
+            None => w.write_offset_at(children_slot, -1),
         }
-        if let Some(s) = &self.color {
-            w.write_string(s, 64)?;
-        }
-        if let Some(s) = &self.link {
-            w.write_string(s, 4096)?;
-        }
+        write_opt_string(&mut w, color_slot, &self.color, 64)?;
+        write_opt_string(&mut w, link_slot, &self.link, 4096)?;
         Ok(w.buf)
     }
 
-    /// Extract the identifying fields (raw_text / message_id, which lead
-    /// the inline variable block). Used for logging disconnect reasons.
-    /// Stops before children/params, which we don't model.
+    /// Extract the identifying fields; other slots are skipped via their
+    /// offsets. Used for logging disconnect reasons.
     pub fn deserialize_shallow(buf: &[u8]) -> Result<Self> {
-        if buf.len() < 8 {
-            return Err(ProtoError::BufferTooSmall { needed: 8, have: buf.len() });
+        if buf.len() < 40 {
+            return Err(ProtoError::BufferTooSmall { needed: 40, have: buf.len() });
         }
         let r = Reader::new(buf);
         let bits = [r.u8_at(0)?, r.u8_at(1)?];
@@ -141,16 +157,27 @@ impl FormattedMessage {
             markup_enabled: r.u8_at(7)? != 0,
             ..Default::default()
         };
-        // Variable fields are inline from offset 8, in declaration order.
-        let mut pos = 8;
+        // Slots: raw_text @8, message_id @12, children @16, params @20,
+        // message_params @24, color @28, link @32, image @36; var start 40.
         if has(0) {
-            let (s, next) = r.string_at(pos, 1_000_000, false)?;
-            msg.raw_text = Some(s);
-            pos = next;
+            if let Some(p) = r.var_offset(8, 40)? {
+                msg.raw_text = Some(r.string_at(p, 1_000_000, false)?.0);
+            }
         }
         if has(1) {
-            let (s, _) = r.string_at(pos, 1_000_000, false)?;
-            msg.message_id = Some(s);
+            if let Some(p) = r.var_offset(12, 40)? {
+                msg.message_id = Some(r.string_at(p, 1_000_000, false)?.0);
+            }
+        }
+        if has(5) {
+            if let Some(p) = r.var_offset(28, 40)? {
+                msg.color = Some(r.string_at(p, 64, false)?.0);
+            }
+        }
+        if has(11) {
+            if let Some(p) = r.var_offset(32, 40)? {
+                msg.link = Some(r.string_at(p, 4096, false)?.0);
+            }
         }
         Ok(msg)
     }
@@ -176,34 +203,12 @@ mod tests {
     fn formatted_translation_message_layout() {
         let msg = FormattedMessage::translation("client.general.worldLoad.loadingWorld");
         let bytes = msg.serialize().unwrap();
-        // 8-byte fixed block (2 null-bits + 5 bool bytes + markup byte),
-        // then the inline varint length + the key. Structures use no
-        // offset slots.
-        assert_eq!(bytes.len(), 8 + 1 + 37);
+        // 40-byte header (2 null-bits + 5 bool bytes + markup + 8 slots),
+        // then varint length + the key.
+        assert_eq!(bytes.len(), 40 + 1 + 37);
         assert_eq!(bytes[0], 0b0000_0010); // only message_id present
         assert_eq!(bytes[1], 0);
         let parsed = FormattedMessage::deserialize_shallow(&bytes).unwrap();
         assert_eq!(parsed.message_id.as_deref(), Some("client.general.worldLoad.loadingWorld"));
-    }
-}
-
-#[cfg(test)]
-mod formatted_message_tests {
-    use super::*;
-
-    #[test]
-    fn translation_message_layout() {
-        // Structure layout: NO offset slots. nullbits(2) + 5 bool bytes +
-        // markup byte = 8 fixed, then the message_id string inline.
-        let msg = FormattedMessage::translation("client.general.worldLoad.loadingWorld");
-        let bytes = msg.serialize().unwrap();
-        assert_eq!(bytes.len(), 8 + 1 + 37);
-        assert_eq!(bytes[0], 0x02); // bit 1: message_id present
-        assert_eq!(bytes[1], 0x00);
-        assert!(bytes[2..8].iter().all(|b| *b == 0));
-        assert_eq!(bytes[8], 37);
-        assert_eq!(&bytes[9..], b"client.general.worldLoad.loadingWorld");
-        let back = FormattedMessage::deserialize_shallow(&bytes).unwrap();
-        assert_eq!(back.message_id.as_deref(), Some("client.general.worldLoad.loadingWorld"));
     }
 }

@@ -421,7 +421,7 @@ fn block_types_init_packet() -> Vec<u8> {
     let mut w = Writer::new();
     w.write_u8(0x01); // null bits: BlockTypes present
     w.write_u8(0); // Type = Init
-    w.write_i32(1); // MaxId
+    w.write_i32(2); // MaxId is the NEXT index (assetMap.getNextIndex())
     w.write_bool_bits(&[true; 4]);
     w.write_var_int(2);
     w.write_i32(0);
@@ -438,7 +438,7 @@ fn block_hitboxes_init_packet() -> Vec<u8> {
     let mut w = Writer::new();
     w.write_u8(0x01); // null bits: dict present
     w.write_u8(0); // Type = Init
-    w.write_i32(0); // MaxId
+    w.write_i32(1); // MaxId = next index; the client sizes its table by it
     w.write_var_int(1); // dict: one entry
     w.write_i32(0); // key 0
     w.write_var_int(1); // hitbox array: one box
@@ -489,8 +489,8 @@ mod tests {
         let packets = empty_registry_init_packets();
         assert_eq!(packets.len(), 52);
         let (_, payload) = packets.iter().find(|(id, _)| *id == 40).unwrap();
-        // nullbits(dict present) | Type=Init | MaxId=1 | 4 bool flags | count 2
-        assert_eq!(&payload[..8], &[0x01, 0x00, 1, 0, 0, 0, 0x0F, 0x02]);
+        // nullbits(dict present) | Type=Init | MaxId=2 | 4 bool flags | count 2
+        assert_eq!(&payload[..8], &[0x01, 0x00, 2, 0, 0, 0, 0x0F, 0x02]);
         // Each entry: i32 key + 277-byte BlockType header + name string.
         // Entry 0 at 8: key 0, header starts with the Name null bit.
         assert_eq!(&payload[8..12], &0i32.to_le_bytes());

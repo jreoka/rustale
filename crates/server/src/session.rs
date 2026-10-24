@@ -627,14 +627,15 @@ mod tests {
             ]
         );
         assert_eq!(s.phase(), Phase::AwaitClientReady);
-
-        // ClientReady with chunks flag streams the flat world.
-        let out = s.handle(ids::CLIENT_READY, &[0b01]);
-        assert_eq!(s.phase(), Phase::InWorld);
-        // radius was 12 chunks (384 blocks): (24)^2 columns * (1 heightmap + 10 sections)
+        // The flat world streams with the join burst (radius was 12
+        // chunks (384 blocks): (24)^2 columns * (1 heightmap + 10 sections)).
         assert_eq!(out.chunk_packets.len(), 24 * 24 * 11);
         assert_eq!(out.chunk_packets[0].0, ids::SET_CHUNK_HEIGHTMAP);
-        // A second ClientReady sends nothing more.
+
+        // ClientReady then only flips the phase; nothing more is sent.
+        let out = s.handle(ids::CLIENT_READY, &[0b01]);
+        assert_eq!(s.phase(), Phase::InWorld);
+        assert!(out.chunk_packets.is_empty());
         let out = s.handle(ids::CLIENT_READY, &[0b11]);
         assert!(out.chunk_packets.is_empty());
     }

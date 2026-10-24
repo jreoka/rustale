@@ -408,7 +408,16 @@ pub struct SetColumn {
 
 impl SetColumn {
     pub fn uniform(x: i32, z: i32, height: i32) -> Self {
-        SetColumn { x, z, heightmap: [height; 1024], tintmap: vec![0; 1024] }
+        // The tintmap is an IntBytePalette serialization: i16 key count,
+        // that many i32 keys, an i32 data length, then the bit field —
+        // 1024 column entries at 10 bits each = 1280 bytes, which the
+        // client validates exactly. One key (tint 0), all entries 0.
+        let mut tintmap = Vec::with_capacity(1290);
+        tintmap.extend_from_slice(&1i16.to_le_bytes());
+        tintmap.extend_from_slice(&0i32.to_le_bytes());
+        tintmap.extend_from_slice(&1280i32.to_le_bytes());
+        tintmap.resize(tintmap.len() + 1280, 0);
+        SetColumn { x, z, heightmap: [height; 1024], tintmap }
     }
 
     pub fn serialize(&self) -> Vec<u8> {

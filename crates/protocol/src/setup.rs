@@ -366,9 +366,28 @@ fn serialize_empty_init(spec: &UpdateSpec) -> Vec<u8> {
 /// (MovementSettings at 113, PlacementSettings at 156) stay zeroed,
 /// which is the all-defaults struct. DrawType: Empty=0, Cube=2;
 /// BlockMaterial: Empty=0, Solid=1; Opacity: Solid=0, Transparent=3.
-fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8) -> Vec<u8> {
+/// One BlockTextures entry with every face set (29-byte header: null
+/// bits + Weight + 6 slots, then the strings).
+fn block_textures(face: &str) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.write_u8(0x3F); // all six faces present
+    w.write_f32(1.0); // Weight
+    let slots: Vec<usize> = (0..6).map(|_| w.reserve_offset()).collect();
+    let var_start = w.position();
+    debug_assert_eq!(var_start, 29);
+    for slot in slots {
+        w.write_offset_at(slot, (w.position() - var_start) as i32);
+        w.write_string(face, 4096).expect("short texture name");
+    }
+    w.buf
+}
+
+fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, cube_textures: bool) -> Vec<u8> {
     let mut fixed = [0u8; 177];
-    fixed[0] = 0x80; // null bits: only Name present
+    fixed[0] = 0x80; // null bits: Name present
+    if cube_textures {
+        fixed[1] = 0x40; // null bits byte 1: CubeTextures present
+    }
     fixed[5] = draw_type;
     fixed[6] = material;
     fixed[7] = opacity;
@@ -376,11 +395,22 @@ fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8) -> Vec<u8> {
     fixed[20..24].copy_from_slice(&1.0f32.to_le_bytes()); // ModelAnimationSpeed
     let mut w = Writer::new();
     w.buf.extend_from_slice(&fixed);
-    // Slots in variable-field order; Name is slot index 1.
-    for i in 0..25 {
-        w.write_i32(if i == 1 { 0 } else { -1 });
+    // Slots in variable-field order: Name is index 1, CubeTextures 8.
+    let slots: Vec<usize> = (0..25).map(|_| w.reserve_offset()).collect();
+    let var_start = w.position();
+    debug_assert_eq!(var_start, 277);
+    for (i, slot) in slots.iter().enumerate() {
+        if i != 1 && !(cube_textures && i == 8) {
+            w.write_offset_at(*slot, -1);
+        }
     }
+    w.write_offset_at(slots[1], (w.position() - var_start) as i32);
     w.write_string(name, 4096).expect("short name");
+    if cube_textures {
+        w.write_offset_at(slots[8], (w.position() - var_start) as i32);
+        w.write_var_int(1);
+        w.buf.extend_from_slice(&block_textures("Unknown"));
+    }
     w.buf
 }
 
@@ -395,9 +425,9 @@ fn block_types_init_packet() -> Vec<u8> {
     w.write_bool_bits(&[true; 4]);
     w.write_var_int(2);
     w.write_i32(0);
-    w.buf.extend_from_slice(&block_type("Empty", 0, 0, 3));
+    w.buf.extend_from_slice(&block_type("Empty", 0, 0, 3, false));
     w.write_i32(1);
-    w.buf.extend_from_slice(&block_type("Stone", 2, 1, 0));
+    w.buf.extend_from_slice(&block_type("Stone", 2, 1, 0, true));
     w.buf
 }
 
@@ -455,7 +485,8 @@ mod tests {
         assert_eq!(&payload[295..299], &1i32.to_le_bytes());
         assert_eq!(payload[299 + 5], 2); // DrawType Cube
         assert_eq!(payload[299 + 6], 1); // Material Solid
-        assert_eq!(payload.len(), 295 + 4 + 277 + 6);
+        // Stone: 277 header + 6 name + 1 array count + 77 BlockTextures.
+        assert_eq!(payload.len(), 295 + 4 + 277 + 6 + 1 + 77);
     }
 
     #[test]

@@ -19,6 +19,9 @@ pub mod ids {
     pub const PING: i32 = 3;
     pub const PONG: i32 = 4;
     pub const NETWORK_TICK: i32 = 5;
+    pub const AUTH_GRANT: i32 = 11;
+    pub const AUTH_TOKEN: i32 = 12;
+    pub const SERVER_AUTH_TOKEN: i32 = 13;
     pub const CONNECT_ACCEPT: i32 = 14;
     pub const WORLD_SETTINGS: i32 = 20;
     pub const WORLD_LOAD_PROGRESS: i32 = 21;
@@ -312,6 +315,167 @@ pub fn diagnose_connect(buf: &[u8]) -> String {
     )
 }
 
+/// Serialize a packet with two nullable string fields (nullbits byte,
+/// two offset slots, fields in declaration order).
+fn ser_two_strings(a: &Option<String>, a_max: usize, b: &Option<String>, b_max: usize) -> Result<Vec<u8>> {
+    let mut w = Writer::new();
+    let mut null_bits = 0u8;
+    if a.is_some() {
+        null_bits |= 0x01;
+    }
+    if b.is_some() {
+        null_bits |= 0x02;
+    }
+    w.write_u8(null_bits);
+    let slot_a = w.reserve_offset();
+    let slot_b = w.reserve_offset();
+    let var_start = w.position();
+    debug_assert_eq!(var_start, 9);
+    match a {
+        Some(s) => {
+            w.write_offset_at(slot_a, (w.position() - var_start) as i32);
+            w.write_string(s, a_max)?;
+        }
+        None => w.write_offset_at(slot_a, -1),
+    }
+    match b {
+        Some(s) => {
+            w.write_offset_at(slot_b, (w.position() - var_start) as i32);
+            w.write_string(s, b_max)?;
+        }
+        None => w.write_offset_at(slot_b, -1),
+    }
+    Ok(w.buf)
+}
+
+/// Read a two-nullable-variable-field packet, walking the fields in
+/// declaration order and requiring each slot to match the walk position.
+fn read_two<T, U>(
+    buf: &[u8],
+    read_a: impl Fn(&Reader, usize) -> Result<(T, usize)>,
+    read_b: impl Fn(&Reader, usize) -> Result<(U, usize)>,
+) -> Result<(Option<T>, Option<U>)> {
+    const VAR_START: usize = 9;
+    if buf.len() < VAR_START {
+        return Err(ProtoError::BufferTooSmall { needed: VAR_START, have: buf.len() });
+    }
+    let r = Reader::new(buf);
+    let null_bits = r.u8_at(0)?;
+    let mut pos = VAR_START;
+    let a = match (null_bits & 0x01 != 0, r.var_offset(1, VAR_START)?) {
+        (true, Some(p)) => {
+            if p != pos {
+                return Err(ProtoError::NonCanonicalLayout { field: "auth field A" });
+            }
+            let (v, next) = read_a(&r, p)?;
+            pos = next;
+            Some(v)
+        }
+        (false, None) => None,
+        _ => return Err(ProtoError::NonCanonicalLayout { field: "auth field A (bit/slot)" }),
+    };
+    let b = match (null_bits & 0x02 != 0, r.var_offset(5, VAR_START)?) {
+        (true, Some(p)) => {
+            if p != pos {
+                return Err(ProtoError::NonCanonicalLayout { field: "auth field B" });
+            }
+            Some(read_b(&r, p)?.0)
+        }
+        (false, None) => None,
+        _ => return Err(ProtoError::NonCanonicalLayout { field: "auth field B (bit/slot)" }),
+    };
+    Ok((a, b))
+}
+
+/// Packet 11, server -> client. Carries the session-service authorization
+/// grant for the client's identity token, plus the server's own identity
+/// token so the client can authenticate the server back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthGrant {
+    pub authorization_grant: Option<String>,
+    pub server_identity_token: Option<String>,
+}
+
+impl AuthGrant {
+    pub fn serialize(&self) -> Result<Vec<u8>> {
+        ser_two_strings(&self.authorization_grant, 4096, &self.server_identity_token, 8192)
+    }
+
+    pub fn deserialize(buf: &[u8]) -> Result<Self> {
+        let (authorization_grant, server_identity_token) =
+            read_two(buf, |r, p| r.string_at(p, 4096, false), |r, p| r.string_at(p, 8192, false))?;
+        Ok(AuthGrant { authorization_grant, server_identity_token })
+    }
+}
+
+/// Packet 12, client -> server. The client's access token (a JWT minted
+/// for this server's audience) plus an authorization grant for the server.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthToken {
+    pub access_token: Option<String>,
+    pub server_authorization_grant: Option<String>,
+}
+
+impl AuthToken {
+    pub fn serialize(&self) -> Result<Vec<u8>> {
+        ser_two_strings(&self.access_token, 8192, &self.server_authorization_grant, 4096)
+    }
+
+    pub fn deserialize(buf: &[u8]) -> Result<Self> {
+        let (access_token, server_authorization_grant) =
+            read_two(buf, |r, p| r.string_at(p, 8192, false), |r, p| r.string_at(p, 4096, false))?;
+        Ok(AuthToken { access_token, server_authorization_grant })
+    }
+}
+
+/// Packet 13, server -> client. The server's access token (proof the
+/// server exchanged the client's grant), plus a password challenge when
+/// the server has a password (we never set one).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ServerAuthToken {
+    pub server_access_token: Option<String>,
+    pub password_challenge: Option<Vec<u8>>,
+}
+
+impl ServerAuthToken {
+    pub fn serialize(&self) -> Result<Vec<u8>> {
+        let mut w = Writer::new();
+        let mut null_bits = 0u8;
+        if self.server_access_token.is_some() {
+            null_bits |= 0x01;
+        }
+        if self.password_challenge.is_some() {
+            null_bits |= 0x02;
+        }
+        w.write_u8(null_bits);
+        let slot_a = w.reserve_offset();
+        let slot_b = w.reserve_offset();
+        let var_start = w.position();
+        debug_assert_eq!(var_start, 9);
+        match &self.server_access_token {
+            Some(s) => {
+                w.write_offset_at(slot_a, (w.position() - var_start) as i32);
+                w.write_string(s, 8192)?;
+            }
+            None => w.write_offset_at(slot_a, -1),
+        }
+        match &self.password_challenge {
+            Some(b) => {
+                w.write_offset_at(slot_b, (w.position() - var_start) as i32);
+                w.write_byte_array(b, 64)?;
+            }
+            None => w.write_offset_at(slot_b, -1),
+        }
+        Ok(w.buf)
+    }
+
+    pub fn deserialize(buf: &[u8]) -> Result<Self> {
+        let (server_access_token, password_challenge) =
+            read_two(buf, |r, p| r.string_at(p, 8192, false), |r, p| r.byte_array_at(p, 64))?;
+        Ok(ServerAuthToken { server_access_token, password_challenge })
+    }
+}
+
 /// Packet 363, client -> server. Sent only in offline/insecure auth mode,
 /// in response to RequestInsecurePlayerOptions. The optional PlayerSkin
 /// structure is captured raw for now (it is the final field, so its bytes
@@ -499,5 +663,38 @@ mod tests {
         let bytes = opts.serialize().unwrap();
         assert_eq!(bytes.len(), 25 + 1 + 5);
         assert_eq!(InsecurePlayerOptions::deserialize(&bytes).unwrap(), opts);
+    }
+}
+
+#[cfg(test)]
+mod auth_packet_tests {
+    use super::*;
+
+    #[test]
+    fn auth_packets_round_trip() {
+        let g = AuthGrant {
+            authorization_grant: Some("grant-abc".into()),
+            server_identity_token: Some("identity-jwt".into()),
+        };
+        assert_eq!(AuthGrant::deserialize(&g.serialize().unwrap()).unwrap(), g);
+        let g2 = AuthGrant { authorization_grant: None, server_identity_token: Some("x".into()) };
+        assert_eq!(AuthGrant::deserialize(&g2.serialize().unwrap()).unwrap(), g2);
+
+        let t = AuthToken {
+            access_token: Some("access-jwt".into()),
+            server_authorization_grant: None,
+        };
+        assert_eq!(AuthToken::deserialize(&t.serialize().unwrap()).unwrap(), t);
+
+        let s = ServerAuthToken {
+            server_access_token: Some("server-access".into()),
+            password_challenge: Some(vec![7u8; 32]),
+        };
+        let bytes = s.serialize().unwrap();
+        // nullbits(1) + slots(8) + varint+13 + varint+32
+        assert_eq!(bytes.len(), 9 + 14 + 33);
+        assert_eq!(ServerAuthToken::deserialize(&bytes).unwrap(), s);
+        let s2 = ServerAuthToken { server_access_token: None, password_challenge: None };
+        assert_eq!(ServerAuthToken::deserialize(&s2.serialize().unwrap()).unwrap(), s2);
     }
 }

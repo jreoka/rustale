@@ -8,8 +8,37 @@ Traced from the reference server sources (`InitialPacketHandler`,
 
 1. C->S `Connect` (0). Server checks protocol CRC/build; mismatch closes
    the QUIC connection with application error 3 (InvalidVersion).
-2. Authenticated mode is the default for real servers; the INSECURE mode
-   (what we implement) continues:
+2. **Authenticated mode (the default, and the only mode the retail client
+   accepts — it refuses the insecure handshake as a "development" server,
+   verified with the real client):**
+   - The server first logs ITSELF in once (OAuth device flow,
+     client_id `hytale-server`, scopes `openid offline auth:server`),
+     picks the account's game profile, and creates a game session
+     (`POST sessions.<domain>/game-session/new`) yielding a session
+     token + server identity token (stored in `auth.json`, refreshed
+     via `/game-session/refresh` or the OAuth refresh token).
+   - C->S `Connect` carries an identity JWT. The server validates it:
+     EdDSA signature against `GET sessions.<domain>/.well-known/jwks.json`,
+     issuer = the sessions URL, exp/nbf/iat within a 300 s skew, subject
+     a UUID, `profile.username`, scope containing `hytale:client`.
+     (No audience check on identity tokens.)
+   - S->C: the server requests a grant from the session service,
+     `POST /server-join/auth-grant {identityToken, aud: <server session
+     id>}` (Bearer = server session token; the session id is a fresh
+     UUID per server boot), then sends `AuthGrant` (11)
+     `{ AuthorizationGrant, ServerIdentityToken }`.
+   - C->S `AuthToken` (12) `{ AccessToken, ServerAuthorizationGrant }`.
+     The server validates the access token like the identity token but
+     with a STRICT audience = the server session id, and requires its
+     subject/username to match the identity token's.
+   - The server exchanges the client's grant:
+     `POST /server-join/auth-token {authorizationGrant, x509Fingerprint}`
+     (Bearer = server session token; fingerprint = base64url-no-pad
+     SHA-256 of the server's TLS cert DER), then sends
+     `ServerAuthToken` (13) `{ ServerAccessToken, PasswordChallenge }`
+     (challenge null: no server password), followed by the step-4
+     accept burst below.
+3. INSECURE mode (development clients only; `RUSTALE_AUTH_MODE=offline`):
    S->C `RequestInsecurePlayerOptions` (364).
 3. C->S `InsecurePlayerOptions` (363): uuid + username are required
    (missing -> `ServerDisconnect` (2) with a FormattedMessage reason).

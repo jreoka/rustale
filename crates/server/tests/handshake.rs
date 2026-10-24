@@ -17,7 +17,10 @@ async fn offline_identification_exchange() {
     let bundle = rustale_server::build_server(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
     let server_addr = bundle.local_addr;
     let server_cert = bundle.server_cert.clone();
-    let server = tokio::spawn(rustale_server::serve(bundle.endpoint));
+    // This test exercises the insecure development handshake.
+    std::env::set_var("RUSTALE_AUTH_MODE", "offline");
+    let server_cert2 = bundle.server_cert.clone();
+    let server = tokio::spawn(async move { rustale_server::serve(bundle.endpoint, &server_cert2).await });
 
     // Client endpoint trusting exactly the server's certificate.
     let _ = rustls::crypto::ring::default_provider().install_default();

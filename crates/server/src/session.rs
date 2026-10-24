@@ -10,6 +10,8 @@
 //! registry Init packets + WorldLoadProgress + WorldLoadFinished ->
 //! SetupFinalize -> in world.
 
+use std::sync::Arc;
+
 use rustale_protocol::packets::ids;
 use rustale_protocol::setup::{
     empty_registry_init_packets, ConnectAccept, RequestAssets, ServerInfo, ViewRadius,
@@ -20,9 +22,32 @@ use rustale_protocol::world::{
     SetEntitySeed, SetTimeDilation, SetUpdateRate, UpdateFeatures, UpdatePostFxSettings,
     UpdateSunSettings, WorldGameplayConfig, HEIGHT_SECTIONS,
 };
-use rustale_protocol::{Connect, FormattedMessage, InsecurePlayerOptions, ServerDisconnect};
+use rustale_protocol::{
+    AuthGrant, AuthToken, Connect, FormattedMessage, InsecurePlayerOptions, ServerAuthToken,
+    ServerDisconnect,
+};
 
+use crate::auth::JwtValidator;
 use crate::close_code;
+
+/// Per-connection view of the server's auth services, present only in
+/// authenticated mode.
+pub struct SessionAuthCtx {
+    pub validator: Arc<JwtValidator>,
+    /// The server session id: strict audience for client access tokens
+    /// and the `aud` sent with auth-grant requests.
+    pub audience: String,
+    pub server_identity_token: String,
+}
+
+/// An asynchronous side effect the transport layer must perform on the
+/// session's behalf (HTTP to the session service), reporting the result
+/// back through `on_auth_grant` / `on_server_token`.
+#[derive(Debug)]
+pub enum AuthEffect {
+    RequestGrant { identity_token: String },
+    ExchangeGrant { grant: String },
+}
 
 /// The single world this server hosts, for now. Fixed UUID so the client
 /// sees a stable world identity across restarts.
@@ -42,6 +67,14 @@ pub enum Phase {
     #[default]
     AwaitConnect,
     AwaitIdentity,
+    /// Identity token validated; waiting for the adapter to fetch the
+    /// authorization grant from the session service.
+    AwaitAuthGrant,
+    /// AuthGrant sent; waiting for the client's AuthToken packet.
+    AwaitAuthTokenPacket,
+    /// AuthToken validated; waiting for the adapter to exchange the
+    /// client's server grant for a server access token.
+    AwaitAuthExchange,
     AwaitSetup,
     AwaitFinalize,
     AwaitClientReady,
@@ -59,6 +92,8 @@ pub struct SessionOutcome {
     pub close: Option<u32>,
     /// If true, drop this stream (protocol violation).
     pub drop_stream: bool,
+    /// An auth side effect for the transport layer to perform.
+    pub effect: Option<AuthEffect>,
 }
 
 pub struct Session {
@@ -68,6 +103,7 @@ pub struct Session {
     view_radius_blocks: Option<i32>,
     sent_assets: bool,
     chunks_sent: bool,
+    auth: Option<Arc<SessionAuthCtx>>,
 }
 
 impl Default for Session {
@@ -79,6 +115,7 @@ impl Default for Session {
             view_radius_blocks: None,
             sent_assets: false,
             chunks_sent: false,
+            auth: None,
         }
     }
 }
@@ -86,6 +123,13 @@ impl Default for Session {
 impl Session {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A session in authenticated mode (the retail client's only path):
+    /// identity comes from the client's identity JWT and the mutual-auth
+    /// exchange runs before setup.
+    pub fn with_auth(ctx: Arc<SessionAuthCtx>) -> Self {
+        Session { auth: Some(ctx), ..Self::default() }
     }
 
     pub fn phase(&self) -> Phase {
@@ -122,6 +166,7 @@ impl Session {
                 out.drop_stream = true;
             }
             ids::CONNECT => self.on_connect(payload, &mut out),
+            ids::AUTH_TOKEN => self.on_auth_token(payload, &mut out),
             ids::INSECURE_PLAYER_OPTIONS => self.on_insecure_options(payload, &mut out),
             ids::REQUEST_ASSETS => self.on_request_assets(payload, &mut out),
             ids::VIEW_RADIUS => match ViewRadius::deserialize(payload) {
@@ -168,8 +213,12 @@ impl Session {
                     out.close = Some(close_code::INVALID_VERSION);
                     return;
                 }
-                out.packets.push((ids::REQUEST_INSECURE_PLAYER_OPTIONS, Vec::new()));
-                self.phase = Phase::AwaitIdentity;
+                if self.auth.is_some() {
+                    self.begin_authenticated(connect, out);
+                } else {
+                    out.packets.push((ids::REQUEST_INSECURE_PLAYER_OPTIONS, Vec::new()));
+                    self.phase = Phase::AwaitIdentity;
+                }
             }
             Err(e) => {
                 eprintln!("[server] undecodable Connect: {e}");
@@ -177,6 +226,142 @@ impl Session {
                 out.drop_stream = true;
             }
         }
+    }
+
+    /// Authenticated path, from a validated Connect: validate the
+    /// identity JWT locally, then ask the transport layer to fetch an
+    /// authorization grant for it.
+    fn begin_authenticated(&mut self, connect: Connect, out: &mut SessionOutcome) {
+        let ctx = self.auth.clone().expect("authenticated session");
+        let Some(token) = connect.identity_token.filter(|t| !t.is_empty()) else {
+            // Mirrors the reference: an authenticated server rejects
+            // tokenless ("development") connections.
+            self.disconnect(out, "client.general.disconnect.serverRequiresAuthentication");
+            return;
+        };
+        match ctx.validator.validate_identity(&token) {
+            Ok(claims) => {
+                println!(
+                    "[server] identity validated: {} ({}) skin={}",
+                    claims.username,
+                    claims.uuid,
+                    if claims.skin.is_some() { "present" } else { "absent" },
+                );
+                self.username = Some(claims.username);
+                self.uuid = crate::auth::parse_uuid_str(&claims.uuid);
+                self.phase = Phase::AwaitAuthGrant;
+                out.effect = Some(AuthEffect::RequestGrant { identity_token: token });
+            }
+            Err(e) => {
+                eprintln!("[server] identity token rejected: {e}");
+                self.disconnect(out, "client.general.disconnect.invalidIdentityToken");
+            }
+        }
+    }
+
+    /// The transport layer reports the auth-grant request result.
+    pub fn on_auth_grant(&mut self, grant: Option<String>) -> SessionOutcome {
+        let mut out = SessionOutcome::default();
+        if self.phase != Phase::AwaitAuthGrant {
+            return out;
+        }
+        match grant {
+            Some(grant) => {
+                let ctx = self.auth.clone().expect("authenticated session");
+                let packet = AuthGrant {
+                    authorization_grant: Some(grant),
+                    server_identity_token: Some(ctx.server_identity_token.clone()),
+                };
+                out.packets.push((ids::AUTH_GRANT, packet.serialize().unwrap_or_default()));
+                self.phase = Phase::AwaitAuthTokenPacket;
+            }
+            None => self.disconnect(&mut out, "client.general.disconnect.authGrantFailed"),
+        }
+        out
+    }
+
+    fn on_auth_token(&mut self, payload: &[u8], out: &mut SessionOutcome) {
+        if self.phase != Phase::AwaitAuthTokenPacket {
+            self.unexpected(out, ids::AUTH_TOKEN);
+            return;
+        }
+        let packet = match AuthToken::deserialize(payload) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[server] undecodable AuthToken: {e}");
+                self.disconnect(out, "client.general.disconnect.invalidAccessToken");
+                return;
+            }
+        };
+        let ctx = self.auth.clone().expect("authenticated session");
+        let Some(access) = packet.access_token.filter(|t| !t.is_empty()) else {
+            self.disconnect(out, "client.general.disconnect.invalidAccessToken");
+            return;
+        };
+        match ctx.validator.validate_access(&access, &ctx.audience) {
+            Ok(claims) => {
+                if crate::auth::parse_uuid_str(&claims.uuid) != self.uuid {
+                    eprintln!("[server] access token UUID does not match identity token");
+                    self.disconnect(out, "client.general.disconnect.tokenUuidMismatch");
+                    return;
+                }
+                if Some(&claims.username) != self.username.as_ref() {
+                    eprintln!("[server] access token username does not match identity token");
+                    self.disconnect(out, "client.general.disconnect.tokenUsernameMismatch");
+                    return;
+                }
+                println!("[server] access token validated for {}", claims.username);
+                match packet.server_authorization_grant.filter(|g| !g.is_empty()) {
+                    Some(grant) => {
+                        self.phase = Phase::AwaitAuthExchange;
+                        out.effect = Some(AuthEffect::ExchangeGrant { grant });
+                    }
+                    None => self.finish_auth(out, None),
+                }
+            }
+            Err(e) => {
+                eprintln!("[server] access token rejected: {e}");
+                self.disconnect(out, "client.general.disconnect.invalidAccessToken");
+            }
+        }
+    }
+
+    /// The transport layer reports the grant-exchange result.
+    pub fn on_server_token(&mut self, token: Option<String>) -> SessionOutcome {
+        let mut out = SessionOutcome::default();
+        if self.phase != Phase::AwaitAuthExchange {
+            return out;
+        }
+        match token {
+            Some(token) => self.finish_auth(&mut out, Some(token)),
+            None => self.disconnect(&mut out, "client.general.disconnect.serverAuthFailed"),
+        }
+        out
+    }
+
+    /// Mutual auth complete: ServerAuthToken, then the same accept burst
+    /// the insecure path uses.
+    fn finish_auth(&mut self, out: &mut SessionOutcome, server_access_token: Option<String>) {
+        let packet = ServerAuthToken { server_access_token, password_challenge: None };
+        out.packets.push((ids::SERVER_AUTH_TOKEN, packet.serialize().unwrap_or_default()));
+        self.accept_burst(out);
+    }
+
+    /// ConnectAccept (no password -> no challenge), then WorldSettings +
+    /// ServerInfo as setup begins.
+    fn accept_burst(&mut self, out: &mut SessionOutcome) {
+        let accept = ConnectAccept { password_challenge: None };
+        out.packets.push((ids::CONNECT_ACCEPT, accept.serialize().unwrap_or_default()));
+        let settings = WorldSettings { required_assets: None };
+        out.packets.push((ids::WORLD_SETTINGS, settings.serialize().unwrap_or_default()));
+        let info = ServerInfo {
+            server_name: Some("Rustale".to_string()),
+            motd: None,
+            max_players: 100,
+            fallback_server: None,
+        };
+        out.packets.push((ids::SERVER_INFO, info.serialize().unwrap_or_default()));
+        self.phase = Phase::AwaitSetup;
     }
 
     fn on_insecure_options(&mut self, payload: &[u8], out: &mut SessionOutcome) {
@@ -201,18 +386,7 @@ impl Session {
 
                 // No server password -> no challenge; fall straight into
                 // setup: ConnectAccept, then WorldSettings + ServerInfo.
-                let accept = ConnectAccept { password_challenge: None };
-                out.packets.push((ids::CONNECT_ACCEPT, accept.serialize().unwrap_or_default()));
-                let settings = WorldSettings { required_assets: None };
-                out.packets.push((ids::WORLD_SETTINGS, settings.serialize().unwrap_or_default()));
-                let info = ServerInfo {
-                    server_name: Some("Rustale".to_string()),
-                    motd: None,
-                    max_players: 100,
-                    fallback_server: None,
-                };
-                out.packets.push((ids::SERVER_INFO, info.serialize().unwrap_or_default()));
-                self.phase = Phase::AwaitSetup;
+                self.accept_burst(out);
             }
             Err(e) => {
                 eprintln!("[server] undecodable InsecurePlayerOptions: {e}");
@@ -368,6 +542,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn connect_bytes() -> Vec<u8> {
         Connect {
@@ -482,6 +657,108 @@ mod tests {
         drive_to_setup(&mut s);
         let out = s.handle(ids::SETUP_FINALIZE, &[]);
         assert_eq!(out.packets[0].0, ids::SERVER_DISCONNECT);
+    }
+
+    #[test]
+    fn authenticated_exchange() {
+        use base64::Engine;
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let signing = SigningKey::from_bytes(&[9u8; 32]);
+        let jwks = serde_json::json!({
+            "keys": [{
+                "kty": "OKP", "crv": "Ed25519", "kid": "k1",
+                "x": base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(signing.verifying_key().as_bytes()),
+            }]
+        });
+        let validator = Arc::new(crate::auth::JwtValidator::new("https://sessions.hytale.com".to_string()));
+        validator.set_keys_from_jwks(&jwks);
+        let ctx = Arc::new(SessionAuthCtx {
+            validator,
+            audience: "session-aud-1".to_string(),
+            server_identity_token: "server-identity-jwt".to_string(),
+        });
+
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let mint = |claims: serde_json::Value| -> String {
+            let enc = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            let h = enc.encode(serde_json::json!({ "alg": "EdDSA", "kid": "k1" }).to_string());
+            let c = enc.encode(claims.to_string());
+            let input = format!("{h}.{c}");
+            format!("{input}.{}", enc.encode(signing.sign(input.as_bytes()).to_bytes()))
+        };
+        let uuid = "523acb87-5dc9-4bbf-a419-380486de4a84";
+        let identity_jwt = mint(serde_json::json!({
+            "iss": "https://sessions.hytale.com", "sub": uuid,
+            "iat": now, "exp": now + 3600, "scope": "hytale:client",
+            "profile": { "username": "jreoka" },
+        }));
+        let access_jwt = mint(serde_json::json!({
+            "iss": "https://sessions.hytale.com", "sub": uuid,
+            "iat": now, "exp": now + 3600, "aud": "session-aud-1",
+            "username": "jreoka",
+        }));
+
+        let mut s = Session::with_auth(ctx);
+        let connect = Connect {
+            protocol_crc: rustale_protocol::packets::PROTOCOL_CRC,
+            protocol_build_number: rustale_protocol::packets::PROTOCOL_BUILD_NUMBER,
+            client_version: "0.7.4".to_string(),
+            client_type: 0,
+            identity_token: Some(identity_jwt),
+            language: "en-US".to_string(),
+            referral_data: None,
+            referral_source: None,
+        };
+        let out = s.handle(ids::CONNECT, &connect.serialize().unwrap());
+        assert!(out.packets.is_empty());
+        assert!(matches!(out.effect, Some(AuthEffect::RequestGrant { .. })));
+        assert_eq!(s.phase(), Phase::AwaitAuthGrant);
+
+        let out = s.on_auth_grant(Some("the-grant".to_string()));
+        assert_eq!(out.packets.len(), 1);
+        assert_eq!(out.packets[0].0, ids::AUTH_GRANT);
+        let grant = AuthGrant::deserialize(&out.packets[0].1).unwrap();
+        assert_eq!(grant.authorization_grant.as_deref(), Some("the-grant"));
+        assert_eq!(grant.server_identity_token.as_deref(), Some("server-identity-jwt"));
+        assert_eq!(s.phase(), Phase::AwaitAuthTokenPacket);
+
+        let auth_token = AuthToken {
+            access_token: Some(access_jwt),
+            server_authorization_grant: Some("client-grant".to_string()),
+        };
+        let out = s.handle(ids::AUTH_TOKEN, &auth_token.serialize().unwrap());
+        assert!(matches!(out.effect, Some(AuthEffect::ExchangeGrant { .. })));
+        assert_eq!(s.phase(), Phase::AwaitAuthExchange);
+
+        let out = s.on_server_token(Some("server-access-jwt".to_string()));
+        let sent: Vec<i32> = out.packets.iter().map(|(id, _)| *id).collect();
+        assert_eq!(
+            sent,
+            vec![ids::SERVER_AUTH_TOKEN, ids::CONNECT_ACCEPT, ids::WORLD_SETTINGS, ids::SERVER_INFO]
+        );
+        assert_eq!(s.phase(), Phase::AwaitSetup);
+
+        // And setup proceeds exactly like the insecure path.
+        let out = s.handle(ids::REQUEST_ASSETS, &[0x00]);
+        assert_eq!(out.packets.len(), 54);
+        assert_eq!(s.phase(), Phase::AwaitFinalize);
+    }
+
+    #[test]
+    fn authenticated_rejects_tokenless_connect() {
+        let validator = Arc::new(crate::auth::JwtValidator::new("https://sessions.hytale.com".to_string()));
+        let ctx = Arc::new(SessionAuthCtx {
+            validator,
+            audience: "aud".to_string(),
+            server_identity_token: "id".to_string(),
+        });
+        let mut s = Session::with_auth(ctx);
+        let out = s.handle(ids::CONNECT, &connect_bytes());
+        assert_eq!(out.packets.len(), 1);
+        assert_eq!(out.packets[0].0, ids::SERVER_DISCONNECT);
+        assert_eq!(out.close, Some(close_code::NO_ERROR));
     }
 
     #[test]

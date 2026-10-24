@@ -6,6 +6,7 @@
 //! All protocol decisions live in `session::Session`; this file is only
 //! the QUIC adapter around it.
 
+pub mod auth;
 pub mod session;
 
 use std::net::SocketAddr;
@@ -15,7 +16,8 @@ use rustale_protocol::{decode_packet_payload, encode_packet_frame, FrameDecoder}
 use quinn::{Endpoint, VarInt};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-use session::Session;
+use auth::{Endpoints, JwtValidator, ServerAuth};
+use session::{AuthEffect, Session, SessionAuthCtx};
 
 /// QUIC application error codes from the protocol definitions.
 pub mod close_code {
@@ -56,14 +58,62 @@ pub fn build_server(addr: SocketAddr) -> std::io::Result<ServerBundle> {
     Ok(ServerBundle { endpoint, server_cert: cert_der, local_addr })
 }
 
+/// Everything the authenticated login exchange needs at runtime.
+pub struct AuthRuntime {
+    server_auth: Arc<ServerAuth>,
+    validator: Arc<JwtValidator>,
+    http: reqwest::Client,
+    sessions_url: String,
+    cert_fingerprint: String,
+}
+
+/// Build the auth runtime unless RUSTALE_AUTH_MODE=offline (the insecure
+/// development handshake, which the retail client refuses). May run the
+/// interactive device login on first use; returns None on offline mode,
+/// and aborts startup on auth failure — an authenticated server without
+/// a session can only fail every connection anyway.
+async fn build_auth_runtime(cert_der: &[u8]) -> Option<Arc<AuthRuntime>> {
+    if std::env::var("RUSTALE_AUTH_MODE").map(|v| v.to_lowercase()) == Ok("offline".to_string()) {
+        println!("[auth] RUSTALE_AUTH_MODE=offline: insecure development handshake (retail clients will refuse)");
+        return None;
+    }
+    let domain = std::env::var("HYTALE_DOMAIN").unwrap_or_else(|_| "hytale.com".to_string());
+    let endpoints = Endpoints::for_domain(&domain);
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .expect("reqwest client");
+    let auth_file = std::env::var("RUSTALE_AUTH_FILE").unwrap_or_else(|_| "auth.json".to_string());
+    let server_auth = match ServerAuth::init(http.clone(), endpoints.clone(), Some(auth_file.into())).await {
+        Ok(a) => Arc::new(a),
+        Err(e) => {
+            eprintln!("[auth] FATAL: could not establish the server session: {e}");
+            eprintln!("[auth] (delete auth.json to redo the login, or set RUSTALE_AUTH_MODE=offline for development clients)");
+            std::process::exit(1);
+        }
+    };
+    let validator = Arc::new(JwtValidator::new(endpoints.issuer().to_string()));
+    validator.maybe_refresh(&http, &endpoints.sessions).await;
+    println!("[auth] authenticated mode ready (server session id {})", server_auth.server_session_id);
+    Some(Arc::new(AuthRuntime {
+        server_auth,
+        validator,
+        http,
+        sessions_url: endpoints.sessions.clone(),
+        cert_fingerprint: auth::cert_fingerprint(cert_der),
+    }))
+}
+
 /// Accept connections until the endpoint is closed.
-pub async fn serve(endpoint: Endpoint) {
+pub async fn serve(endpoint: Endpoint, server_cert: &CertificateDer<'static>) {
+    let runtime = build_auth_runtime(server_cert.as_ref()).await;
     while let Some(incoming) = endpoint.accept().await {
+        let runtime = runtime.clone();
         tokio::spawn(async move {
             match incoming.await {
                 Ok(conn) => {
                     println!("[server] connection from {}", conn.remote_address());
-                    handle_connection(conn).await;
+                    handle_connection(conn, runtime).await;
                 }
                 Err(e) => eprintln!("[server] connection failed: {e}"),
             }
@@ -80,17 +130,72 @@ struct AuxStreams {
     chunks: Option<quinn::SendStream>,
 }
 
-async fn handle_connection(conn: quinn::Connection) {
-    let session = Arc::new(tokio::sync::Mutex::new(Session::new()));
+async fn handle_connection(conn: quinn::Connection, runtime: Option<Arc<AuthRuntime>>) {
+    let session = match &runtime {
+        Some(rt) => {
+            // Keep the JWKS reasonably fresh for this connection.
+            rt.validator.maybe_refresh(&rt.http, &rt.sessions_url).await;
+            let ctx = Arc::new(SessionAuthCtx {
+                validator: rt.validator.clone(),
+                audience: rt.server_auth.server_session_id.clone(),
+                server_identity_token: rt.server_auth.identity_token().unwrap_or_default(),
+            });
+            Arc::new(tokio::sync::Mutex::new(Session::with_auth(ctx)))
+        }
+        None => Arc::new(tokio::sync::Mutex::new(Session::new())),
+    };
     let aux = Arc::new(tokio::sync::Mutex::new(AuxStreams::default()));
     while let Ok((send, recv)) = conn.accept_bi().await {
         let session = session.clone();
         let aux = aux.clone();
         let conn = conn.clone();
+        let runtime = runtime.clone();
         tokio::spawn(async move {
-            handle_stream(conn, send, recv, session, aux).await;
+            handle_stream(conn, send, recv, session, aux, runtime).await;
         });
     }
+}
+
+/// Write one outcome's packets (and chunk packets) and apply its close
+/// decisions. Returns false when the stream handler should stop.
+async fn apply_outcome(
+    conn: &quinn::Connection,
+    send: &mut quinn::SendStream,
+    aux: &Arc<tokio::sync::Mutex<AuxStreams>>,
+    outcome: &session::SessionOutcome,
+) -> bool {
+    for (out_id, out_payload) in &outcome.packets {
+        let frame = encode_packet_frame(*out_id, out_payload);
+        if let Err(e) = send.write_all(&frame).await {
+            eprintln!("[server] write failed: {e}");
+            return false;
+        }
+    }
+    if !outcome.chunk_packets.is_empty() {
+        let mut aux = aux.lock().await;
+        if aux.chunks.is_none() {
+            match conn.open_uni().await {
+                Ok(stream) => aux.chunks = Some(stream),
+                Err(e) => {
+                    eprintln!("[server] cannot open chunks stream: {e}");
+                    return false;
+                }
+            }
+        }
+        let chunks = aux.chunks.as_mut().unwrap();
+        for (out_id, out_payload) in &outcome.chunk_packets {
+            let frame = encode_packet_frame(*out_id, out_payload);
+            if let Err(e) = chunks.write_all(&frame).await {
+                eprintln!("[server] chunks write failed: {e}");
+                return false;
+            }
+        }
+    }
+    if let Some(code) = outcome.close {
+        conn.close(VarInt::from_u32(code), b"closed by server");
+        return false;
+    }
+    !outcome.drop_stream
 }
 
 async fn handle_stream(
@@ -99,6 +204,7 @@ async fn handle_stream(
     mut recv: quinn::RecvStream,
     session: Arc<tokio::sync::Mutex<Session>>,
     aux: Arc<tokio::sync::Mutex<AuxStreams>>,
+    runtime: Option<Arc<AuthRuntime>>,
 ) {
     let mut decoder = FrameDecoder::new();
     let mut buf = vec![0u8; 64 * 1024];
@@ -116,40 +222,47 @@ async fn handle_stream(
                                     return;
                                 }
                             };
-                            let outcome = session.lock().await.handle(packet_id, &payload);
-                            for (out_id, out_payload) in &outcome.packets {
-                                let frame = encode_packet_frame(*out_id, out_payload);
-                                if let Err(e) = send.write_all(&frame).await {
-                                    eprintln!("[server] write failed: {e}");
+                            let mut outcome = session.lock().await.handle(packet_id, &payload);
+                            // Auth side effects (session-service HTTP) run
+                            // inline; each follow-up outcome is applied the
+                            // same way until no effect remains.
+                            loop {
+                                if !apply_outcome(&conn, &mut send, &aux, &outcome).await {
                                     return;
                                 }
-                            }
-                            if !outcome.chunk_packets.is_empty() {
-                                let mut aux = aux.lock().await;
-                                if aux.chunks.is_none() {
-                                    match conn.open_uni().await {
-                                        Ok(stream) => aux.chunks = Some(stream),
-                                        Err(e) => {
-                                            eprintln!("[server] cannot open chunks stream: {e}");
-                                            return;
-                                        }
+                                match outcome.effect.take() {
+                                    None => break,
+                                    Some(AuthEffect::RequestGrant { identity_token }) => {
+                                        let Some(rt) = &runtime else { return };
+                                        let grant = match rt
+                                            .server_auth
+                                            .request_auth_grant(&identity_token)
+                                            .await
+                                        {
+                                            Ok(g) => Some(g),
+                                            Err(e) => {
+                                                eprintln!("[auth] auth-grant request failed: {e}");
+                                                None
+                                            }
+                                        };
+                                        outcome = session.lock().await.on_auth_grant(grant);
+                                    }
+                                    Some(AuthEffect::ExchangeGrant { grant }) => {
+                                        let Some(rt) = &runtime else { return };
+                                        let token = match rt
+                                            .server_auth
+                                            .exchange_server_grant(&grant, &rt.cert_fingerprint)
+                                            .await
+                                        {
+                                            Ok(t) => Some(t),
+                                            Err(e) => {
+                                                eprintln!("[auth] grant exchange failed: {e}");
+                                                None
+                                            }
+                                        };
+                                        outcome = session.lock().await.on_server_token(token);
                                     }
                                 }
-                                let chunks = aux.chunks.as_mut().unwrap();
-                                for (out_id, out_payload) in &outcome.chunk_packets {
-                                    let frame = encode_packet_frame(*out_id, out_payload);
-                                    if let Err(e) = chunks.write_all(&frame).await {
-                                        eprintln!("[server] chunks write failed: {e}");
-                                        return;
-                                    }
-                                }
-                            }
-                            if let Some(code) = outcome.close {
-                                conn.close(VarInt::from_u32(code), b"closed by server");
-                                return;
-                            }
-                            if outcome.drop_stream {
-                                return;
                             }
                         }
                         Ok(None) => break,

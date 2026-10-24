@@ -13,7 +13,8 @@ pub mod world;
 pub use frame::{encode_frame, FrameDecoder};
 pub use io::{ProtoError, Reader, Result, Writer};
 pub use packets::{
-    decode_packet_payload, encode_packet_frame, is_compressed, Connect, HostAddress,
-    InsecurePlayerOptions, RequestInsecurePlayerOptions, ServerDisconnect,
+    decode_packet_payload, encode_packet_frame, is_compressed, AuthGrant, AuthToken, Connect,
+    HostAddress, InsecurePlayerOptions, RequestInsecurePlayerOptions, ServerAuthToken,
+    ServerDisconnect,
 };
 pub use structures::{Asset, FormattedMessage};

@@ -9,6 +9,6 @@ async fn main() -> std::io::Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let bundle = rustale_server::build_server(addr)?;
     println!("[server] listening on UDP {} (protocol build {})", bundle.local_addr, rustale_protocol::packets::PROTOCOL_BUILD_NUMBER);
-    rustale_server::serve(bundle.endpoint).await;
+    rustale_server::serve(bundle.endpoint, &bundle.server_cert).await;
     Ok(())
 }

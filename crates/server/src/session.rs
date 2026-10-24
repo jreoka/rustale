@@ -431,31 +431,24 @@ impl Session {
         }
         match RequestAssets::deserialize(payload) {
             Ok(req) => {
-                let held: std::collections::HashSet<&str> = req
-                    .assets
-                    .as_deref()
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|a| a.hash.as_str())
-                    .collect();
-                let missing = required_assets().iter().filter(|a| !held.contains(a.hash.as_str())).count();
+                // RequestAssets lists the assets the client still NEEDS
+                // (the reference serves those by hash as AssetInitialize/
+                // AssetPart/AssetFinalize). Zero requested = the client
+                // already holds the whole required set locally.
+                let requested = req.assets.map(|a| a.len()).unwrap_or(0);
                 println!(
-                    "[server] RequestAssets: client holds {} of {} required assets ({missing} missing)",
-                    held.len(),
+                    "[server] RequestAssets: client requests {requested} of {} required assets",
                     required_assets().len(),
                 );
-                if missing > 0 {
-                    eprintln!("[server] WARNING: client lacks {missing} assets we cannot serve (no local pack files)");
+                if requested > 0 {
+                    eprintln!("[server] WARNING: client wants {requested} assets we cannot serve yet (no local pack files)");
                 }
             }
             Err(e) => {
                 eprintln!("[server] undecodable RequestAssets: {e} (continuing)");
             }
         }
-        // Any still-missing assets would be sent as AssetInitialize/
-        // AssetPart here; with a matching stock install the client holds
-        // everything and nothing is sent. Then the registry Init packets
-        // and the world-load completion pair.
+        // Then the registry Init packets and the world-load pair.
         self.sent_assets = true;
         out.packets.extend(empty_registry_init_packets());
         let progress = WorldLoadProgress {

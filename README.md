@@ -1,4 +1,4 @@
-# hytale-rust-server
+# Rustale
 
 A from-scratch Rust implementation of the Hytale dedicated server,
 targeting the **release** patchline protocol (build 258, CRC 3908406161).
@@ -27,7 +27,7 @@ gameplay.
 ## Run
 
 ```
-cargo run --release -p hytale-server   # listens on UDP 5520 (HYTALE_PORT to override)
+cargo run --release -p rustale-server   # listens on UDP 5520 (HYTALE_PORT to override)
 cargo test                             # protocol + session tests
 cargo test -- --ignored                # live QUIC handshake test (needs UDP)
 ```

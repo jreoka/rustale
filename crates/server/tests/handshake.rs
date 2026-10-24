@@ -5,8 +5,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use hytale_protocol::packets::ids;
-use hytale_protocol::{encode_frame, Connect, FrameDecoder, InsecurePlayerOptions};
+use rustale_protocol::packets::ids;
+use rustale_protocol::{encode_frame, Connect, FrameDecoder, InsecurePlayerOptions};
 
 // Ignored in sandboxed environments that block UDP sockets entirely
 // (this dev VM does: even loopback UDP sendto returns EPERM). On a normal
@@ -14,10 +14,10 @@ use hytale_protocol::{encode_frame, Connect, FrameDecoder, InsecurePlayerOptions
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires working UDP sockets"]
 async fn offline_identification_exchange() {
-    let bundle = hytale_server::build_server(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+    let bundle = rustale_server::build_server(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
     let server_addr = bundle.local_addr;
     let server_cert = bundle.server_cert.clone();
-    let server = tokio::spawn(hytale_server::serve(bundle.endpoint));
+    let server = tokio::spawn(rustale_server::serve(bundle.endpoint));
 
     // Client endpoint trusting exactly the server's certificate.
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -26,7 +26,7 @@ async fn offline_identification_exchange() {
     let mut tls = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    tls.alpn_protocols = vec![hytale_protocol::packets::ALPN.to_vec()];
+    tls.alpn_protocols = vec![rustale_protocol::packets::ALPN.to_vec()];
     let quic = quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap();
     let mut client = quinn::Endpoint::client(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
     client.set_default_client_config(quinn::ClientConfig::new(Arc::new(quic)));
@@ -36,8 +36,8 @@ async fn offline_identification_exchange() {
 
     // Send Connect.
     let connect = Connect {
-        protocol_crc: hytale_protocol::packets::PROTOCOL_CRC,
-        protocol_build_number: hytale_protocol::packets::PROTOCOL_BUILD_NUMBER,
+        protocol_crc: rustale_protocol::packets::PROTOCOL_CRC,
+        protocol_build_number: rustale_protocol::packets::PROTOCOL_BUILD_NUMBER,
         client_version: "1.0.0".to_string(),
         client_type: 0,
         identity_token: None,

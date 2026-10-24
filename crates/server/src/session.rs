@@ -10,23 +10,23 @@
 //! registry Init packets + WorldLoadProgress + WorldLoadFinished ->
 //! SetupFinalize -> in world.
 
-use hytale_protocol::packets::ids;
-use hytale_protocol::setup::{
+use rustale_protocol::packets::ids;
+use rustale_protocol::setup::{
     empty_registry_init_packets, ConnectAccept, RequestAssets, ServerInfo, ViewRadius,
     WorldLoadProgress, WorldSettings,
 };
-use hytale_protocol::world::{
+use rustale_protocol::world::{
     uniform_section_data, ClientReady, JoinWorld, SetChunk, SetChunkHeightmap, SetClientId,
     SetEntitySeed, SetTimeDilation, SetUpdateRate, UpdateFeatures, UpdatePostFxSettings,
     UpdateSunSettings, WorldGameplayConfig, HEIGHT_SECTIONS,
 };
-use hytale_protocol::{Connect, FormattedMessage, InsecurePlayerOptions, ServerDisconnect};
+use rustale_protocol::{Connect, FormattedMessage, InsecurePlayerOptions, ServerDisconnect};
 
 use crate::close_code;
 
 /// The single world this server hosts, for now. Fixed UUID so the client
 /// sees a stable world identity across restarts.
-pub const WORLD_UUID: [u8; 16] = *b"HytaleRustWrld01";
+pub const WORLD_UUID: [u8; 16] = *b"RustaleWorld0001";
 /// Sections 0 and 1 are solid; the walkable surface is the top of
 /// section 1, y = 63.
 pub const GROUND_TOP_Y: i32 = 63;
@@ -160,9 +160,9 @@ impl Session {
                     connect.language,
                     if connect.identity_token.is_some() { "present" } else { "absent" },
                 );
-                if connect.protocol_crc != hytale_protocol::packets::PROTOCOL_CRC
+                if connect.protocol_crc != rustale_protocol::packets::PROTOCOL_CRC
                     || connect.protocol_build_number
-                        != hytale_protocol::packets::PROTOCOL_BUILD_NUMBER
+                        != rustale_protocol::packets::PROTOCOL_BUILD_NUMBER
                 {
                     eprintln!("[server] protocol mismatch, closing with InvalidVersion");
                     out.close = Some(close_code::INVALID_VERSION);
@@ -205,7 +205,7 @@ impl Session {
                 let settings = WorldSettings { required_assets: None };
                 out.packets.push((ids::WORLD_SETTINGS, settings.serialize().unwrap_or_default()));
                 let info = ServerInfo {
-                    server_name: Some("Hytale (Rust)".to_string()),
+                    server_name: Some("Rustale".to_string()),
                     motd: None,
                     max_players: 100,
                     fallback_server: None,
@@ -370,8 +370,8 @@ mod tests {
 
     fn connect_bytes() -> Vec<u8> {
         Connect {
-            protocol_crc: hytale_protocol::packets::PROTOCOL_CRC,
-            protocol_build_number: hytale_protocol::packets::PROTOCOL_BUILD_NUMBER,
+            protocol_crc: rustale_protocol::packets::PROTOCOL_CRC,
+            protocol_build_number: rustale_protocol::packets::PROTOCOL_BUILD_NUMBER,
             client_version: "1.0.0".to_string(),
             client_type: 0,
             identity_token: None,

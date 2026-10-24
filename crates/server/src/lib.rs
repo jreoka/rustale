@@ -11,7 +11,7 @@ pub mod session;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use hytale_protocol::{decode_packet_payload, encode_packet_frame, FrameDecoder};
+use rustale_protocol::{decode_packet_payload, encode_packet_frame, FrameDecoder};
 use quinn::{Endpoint, VarInt};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
@@ -46,7 +46,7 @@ pub fn build_server(addr: SocketAddr) -> std::io::Result<ServerBundle> {
         .with_no_client_auth()
         .with_single_cert(vec![cert_der.clone()], key_der)
         .map_err(std::io::Error::other)?;
-    tls.alpn_protocols = vec![hytale_protocol::packets::ALPN.to_vec()];
+    tls.alpn_protocols = vec![rustale_protocol::packets::ALPN.to_vec()];
 
     let quic = quinn::crypto::rustls::QuicServerConfig::try_from(tls)
         .map_err(std::io::Error::other)?;

@@ -188,24 +188,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hytale-protocol"
-version = "0.1.0"
-dependencies = [
- "zstd",
-]
-
-[[package]]
-name = "hytale-server"
-version = "0.1.0"
-dependencies = [
- "hytale-protocol",
- "quinn",
- "rcgen",
- "rustls",
- "tokio",
-]
-
-[[package]]
 name = "jni"
 version = "0.22.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -542,6 +524,24 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rustale-protocol"
+version = "0.1.0"
+dependencies = [
+ "zstd",
+]
+
+[[package]]
+name = "rustale-server"
+version = "0.1.0"
+dependencies = [
+ "quinn",
+ "rcgen",
+ "rustale-protocol",
+ "rustls",
+ "tokio",
 ]
 
 [[package]]

@@ -394,3 +394,32 @@ mod tests {
         assert_eq!(solid[0], 0b100); // only data present
     }
 }
+
+/// SetColumn (138, zstd, Chunks channel): creates a chunk column on the
+/// client. Fixed block: x, z, then the heightmap as a fixed-length
+/// 1024-entry i32 array (4104 bytes total); the tintmap is the single
+/// variable field and follows inline.
+pub struct SetColumn {
+    pub x: i32,
+    pub z: i32,
+    pub heightmap: [i32; 1024],
+    pub tintmap: Vec<u8>,
+}
+
+impl SetColumn {
+    pub fn uniform(x: i32, z: i32, height: i32) -> Self {
+        SetColumn { x, z, heightmap: [height; 1024], tintmap: vec![0; 1024] }
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.write_i32(self.x);
+        w.write_i32(self.z);
+        for h in self.heightmap {
+            w.write_i32(h);
+        }
+        w.write_var_int(self.tintmap.len() as u32);
+        w.buf.extend_from_slice(&self.tintmap);
+        w.buf
+    }
+}

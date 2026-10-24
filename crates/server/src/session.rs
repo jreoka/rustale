@@ -18,7 +18,7 @@ use rustale_protocol::setup::{
     WorldLoadProgress, WorldSettings,
 };
 use rustale_protocol::world::{
-    uniform_section_data, ClientReady, JoinWorld, SetChunk, SetChunkHeightmap, SetClientId,
+    uniform_section_data, ClientReady, JoinWorld, SetChunk, SetColumn, SetClientId,
     SetEntitySeed, SetTimeDilation, SetUpdateRate, UpdateFeatures, UpdatePostFxSettings,
     UpdateSunSettings, WorldGameplayConfig, HEIGHT_SECTIONS,
 };
@@ -530,8 +530,8 @@ impl Session {
         for cx in -radius..radius {
             for cz in -radius..radius {
                 out.chunk_packets.push((
-                    ids::SET_CHUNK_HEIGHTMAP,
-                    SetChunkHeightmap::uniform(cx, cz, GROUND_TOP_Y).serialize(),
+                    ids::SET_COLUMN,
+                    SetColumn::uniform(cx, cz, GROUND_TOP_Y).serialize(),
                 ));
                 for sy in 0..HEIGHT_SECTIONS {
                     let chunk = if sy <= 1 {
@@ -633,7 +633,7 @@ mod tests {
         // preceded by ViewRadius, which is a Chunks-channel packet.
         assert_eq!(out.chunk_packets.len(), 24 * 24 * 11 + 1);
         assert_eq!(out.chunk_packets[0].0, ids::VIEW_RADIUS);
-        assert_eq!(out.chunk_packets[1].0, ids::SET_CHUNK_HEIGHTMAP);
+        assert_eq!(out.chunk_packets[1].0, ids::SET_COLUMN);
 
         // ClientReady then only flips the phase; nothing more is sent.
         let out = s.handle(ids::CLIENT_READY, &[0b01]);

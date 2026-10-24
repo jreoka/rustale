@@ -360,9 +360,61 @@ fn serialize_empty_init(spec: &UpdateSpec) -> Vec<u8> {
     w.buf
 }
 
+/// A minimal BlockType: the 177-byte fixed block (layout verified field
+/// by field against the generated reader accessors) plus 25 offset slots,
+/// all variable fields absent except Name. The fixed nullable structs
+/// (MovementSettings at 113, PlacementSettings at 156) stay zeroed,
+/// which is the all-defaults struct. DrawType: Empty=0, Cube=2;
+/// BlockMaterial: Empty=0, Solid=1; Opacity: Solid=0, Transparent=3.
+fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8) -> Vec<u8> {
+    let mut fixed = [0u8; 177];
+    fixed[0] = 0x80; // null bits: only Name present
+    fixed[5] = draw_type;
+    fixed[6] = material;
+    fixed[7] = opacity;
+    fixed[16..20].copy_from_slice(&1.0f32.to_le_bytes()); // ModelScale
+    fixed[20..24].copy_from_slice(&1.0f32.to_le_bytes()); // ModelAnimationSpeed
+    let mut w = Writer::new();
+    w.buf.extend_from_slice(&fixed);
+    // Slots in variable-field order; Name is slot index 1.
+    for i in 0..25 {
+        w.write_i32(if i == 1 { 0 } else { -1 });
+    }
+    w.write_string(name, 4096).expect("short name");
+    w.buf
+}
+
+/// UpdateBlockTypes (40) with two entries: id 0 = Empty (air), id 1 =
+/// a plain solid cube — the ground block the flat world is built from.
+/// The client cannot prepare block types from an empty store.
+fn block_types_init_packet() -> Vec<u8> {
+    let mut w = Writer::new();
+    w.write_u8(0x01); // null bits: BlockTypes present
+    w.write_u8(0); // Type = Init
+    w.write_i32(1); // MaxId
+    w.write_bool_bits(&[true; 4]);
+    w.write_var_int(2);
+    w.write_i32(0);
+    w.buf.extend_from_slice(&block_type("Empty", 0, 0, 3));
+    w.write_i32(1);
+    w.buf.extend_from_slice(&block_type("Stone", 2, 1, 0));
+    w.buf
+}
+
 /// All 52 store Init packets as (packet_id, payload) pairs, in ID order.
+/// Every store is empty except BlockTypes, which carries the two blocks
+/// the flat world needs.
 pub fn empty_registry_init_packets() -> Vec<(i32, Vec<u8>)> {
-    UPDATE_SPECS.iter().map(|s| (s.id, serialize_empty_init(s))).collect()
+    UPDATE_SPECS
+        .iter()
+        .map(|s| {
+            if s.id == 40 {
+                (s.id, block_types_init_packet())
+            } else {
+                (s.id, serialize_empty_init(s))
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -388,12 +440,22 @@ mod tests {
     }
 
     #[test]
-    fn update_block_types_empty_init_bytes() {
+    fn update_block_types_init_bytes() {
         let packets = empty_registry_init_packets();
         assert_eq!(packets.len(), 52);
         let (_, payload) = packets.iter().find(|(id, _)| *id == 40).unwrap();
-        // nullbits(dict present) | Type=Init | MaxId=0 | 4 bool flags | count 0
-        assert_eq!(payload, &vec![0x01, 0x00, 0, 0, 0, 0, 0x0F, 0x00]);
+        // nullbits(dict present) | Type=Init | MaxId=1 | 4 bool flags | count 2
+        assert_eq!(&payload[..8], &[0x01, 0x00, 1, 0, 0, 0, 0x0F, 0x02]);
+        // Each entry: i32 key + 277-byte BlockType header + name string.
+        // Entry 0 at 8: key 0, header starts with the Name null bit.
+        assert_eq!(&payload[8..12], &0i32.to_le_bytes());
+        assert_eq!(payload[12], 0x80);
+        assert_eq!(payload[12 + 5], 0); // DrawType Empty
+        // Entry 1 follows: 12 + 277 + (1 + 5) = 295.
+        assert_eq!(&payload[295..299], &1i32.to_le_bytes());
+        assert_eq!(payload[299 + 5], 2); // DrawType Cube
+        assert_eq!(payload[299 + 6], 1); // Material Solid
+        assert_eq!(payload.len(), 295 + 4 + 277 + 6);
     }
 
     #[test]

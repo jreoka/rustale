@@ -72,9 +72,6 @@ pub enum AuthEffect {
     ExchangeGrant { grant: String },
 }
 
-/// The single world this server hosts, for now. Fixed UUID so the client
-/// sees a stable world identity across restarts.
-pub const WORLD_UUID: [u8; 16] = *b"RustaleWorld0001";
 /// Sections 0 and 1 are solid; the walkable surface is the top of
 /// section 1, y = 63.
 pub const GROUND_TOP_Y: i32 = 63;
@@ -127,6 +124,22 @@ pub struct Session {
     sent_assets: bool,
     chunks_sent: bool,
     auth: Option<Arc<SessionAuthCtx>>,
+    /// The world identity sent in JoinWorld. Random per session: the
+    /// client keys persisted per-world state (map/exploration caches)
+    /// by it, and a fixed value would reuse whatever an earlier,
+    /// broken run left behind.
+    world_uuid: [u8; 16],
+}
+
+/// A fresh v4-layout UUID from the auth module's generator.
+fn fresh_world_uuid() -> [u8; 16] {
+    let s = crate::auth::new_session_id();
+    let hex: String = s.chars().filter(|c| *c != '-').collect();
+    let mut b = [0u8; 16];
+    for i in 0..16 {
+        b[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap_or(0);
+    }
+    b
 }
 
 impl Default for Session {
@@ -139,6 +152,7 @@ impl Default for Session {
             sent_assets: false,
             chunks_sent: false,
             auth: None,
+            world_uuid: fresh_world_uuid(),
         }
     }
 }
@@ -511,7 +525,7 @@ impl Session {
                 // official-server baseline client log confirms it:
                 // "ProcessJoinWorldPacket: FadeInOut is False".
                 fade_in_out: false,
-                world_uuid: WORLD_UUID,
+                world_uuid: self.world_uuid,
                 min_section_y: Some(0),
                 max_section_y: Some(HEIGHT_SECTIONS - 1),
             }

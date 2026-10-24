@@ -437,6 +437,41 @@ mod tests {
     }
 
     #[test]
+    fn real_client_connect_frame() {
+        // Regression for the first real-client test: a Connect carrying a
+        // 1728-byte identity token and language "en-US" is exactly 1782
+        // payload bytes, and its frame length prefix counts those 1782
+        // bytes only. (Our original framing counted id+payload and cut
+        // every real packet four bytes short.)
+        let mut token = String::from("eyJ");
+        while token.len() < 1728 {
+            token.push('x');
+        }
+        let connect = Connect {
+            protocol_crc: PROTOCOL_CRC,
+            protocol_build_number: PROTOCOL_BUILD_NUMBER,
+            client_version: "0.7.4".to_string(),
+            client_type: 0,
+            identity_token: Some(token),
+            language: "en-US".to_string(),
+            referral_data: None,
+            referral_source: None,
+        };
+        let payload = connect.serialize().unwrap();
+        assert_eq!(payload.len(), 1782);
+        let frame = crate::frame::encode_frame(ids::CONNECT, &payload);
+        assert_eq!(i32::from_le_bytes(frame[0..4].try_into().unwrap()), 1782);
+        let mut dec = crate::frame::FrameDecoder::new();
+        dec.feed(&frame);
+        let (id, raw) = dec.next_frame().unwrap().unwrap();
+        assert_eq!(id, ids::CONNECT);
+        assert_eq!(raw.len(), 1782);
+        let parsed = Connect::deserialize(&raw).unwrap();
+        assert_eq!(parsed.language, "en-US");
+        assert_eq!(parsed.identity_token.unwrap().len(), 1728);
+    }
+
+    #[test]
     fn compressed_packet_frame_round_trip() {
         // WorldSettings (20) is a zstd packet: the framed payload must not
         // be the raw payload, and must decode back to it.

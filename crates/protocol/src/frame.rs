@@ -1,17 +1,18 @@
-//! Stream framing, as in the reference QuicheChannel: each frame on a QUIC
-//! stream is [i32 LE length][i32 LE packet id][payload], where the length
-//! counts the packet-id field plus the payload (frame total = length + 4).
+//! Stream framing, as in the reference PacketIO.writeFramedPacket: each
+//! frame on a QUIC stream is [i32 LE payload length][i32 LE packet id]
+//! [payload]. The length counts the payload ONLY (for compressed packets,
+//! the compressed payload) — verified against the reference writer, which
+//! stores the serializer's returned size at the length offset.
 
 use crate::io::{ProtoError, Result};
 
-/// Largest accepted frame body (packet id + payload). Individual packets
-/// enforce their own smaller MaxSize during deserialization.
-pub const MAX_FRAME_BODY: usize = 64 * 1024 * 1024;
+/// Largest accepted payload in one frame. Individual packets enforce
+/// their own smaller MaxSize during deserialization.
+pub const MAX_FRAME_PAYLOAD: usize = 64 * 1024 * 1024;
 
 pub fn encode_frame(packet_id: i32, payload: &[u8]) -> Vec<u8> {
-    let body_len = 4 + payload.len();
-    let mut out = Vec::with_capacity(4 + body_len);
-    out.extend_from_slice(&(body_len as i32).to_le_bytes());
+    let mut out = Vec::with_capacity(8 + payload.len());
+    out.extend_from_slice(&(payload.len() as i32).to_le_bytes());
     out.extend_from_slice(&packet_id.to_le_bytes());
     out.extend_from_slice(payload);
     out
@@ -38,11 +39,11 @@ impl FrameDecoder {
         if self.buf.len() < 4 {
             return Ok(None);
         }
-        let body_len = i32::from_le_bytes(self.buf[0..4].try_into().unwrap());
-        if body_len < 4 || body_len as usize > MAX_FRAME_BODY {
-            return Err(ProtoError::FrameTooLarge { len: body_len.max(0) as usize });
+        let payload_len = i32::from_le_bytes(self.buf[0..4].try_into().unwrap());
+        if payload_len < 0 || payload_len as usize > MAX_FRAME_PAYLOAD {
+            return Err(ProtoError::FrameTooLarge { len: payload_len.max(0) as usize });
         }
-        let total = 4 + body_len as usize;
+        let total = 8 + payload_len as usize;
         if self.buf.len() < total {
             return Ok(None);
         }
@@ -62,7 +63,10 @@ mod tests {
         let payload = b"hello";
         let frame = encode_frame(364, payload);
         assert_eq!(frame.len(), 4 + 4 + 5);
-        assert_eq!(i32::from_le_bytes(frame[0..4].try_into().unwrap()), 9);
+        // The length prefix counts the payload only (reference semantics;
+        // a symmetric off-by-four here is exactly what the first real
+        // client caught, so pin it).
+        assert_eq!(i32::from_le_bytes(frame[0..4].try_into().unwrap()), 5);
 
         let mut dec = FrameDecoder::new();
         // Feed in awkward pieces, including a second frame glued on.
@@ -82,7 +86,10 @@ mod tests {
     #[test]
     fn frame_rejects_bad_length() {
         let mut dec = FrameDecoder::new();
-        dec.feed(&3i32.to_le_bytes());
+        dec.feed(&(-1i32).to_le_bytes());
+        assert!(matches!(dec.next_frame(), Err(ProtoError::FrameTooLarge { .. })));
+        let mut dec = FrameDecoder::new();
+        dec.feed(&((MAX_FRAME_PAYLOAD + 1) as i32).to_le_bytes());
         assert!(matches!(dec.next_frame(), Err(ProtoError::FrameTooLarge { .. })));
     }
 }

@@ -286,6 +286,32 @@ impl Connect {
     }
 }
 
+/// Best-effort structural diagnosis of a Connect payload that failed to
+/// parse: dumps the fixed header fields and the offset slots, which is
+/// enough to spot a protocol-build layout difference (e.g. an extra
+/// variable field shifting the variable block by one slot).
+pub fn diagnose_connect(buf: &[u8]) -> String {
+    fn hex(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ")
+    }
+    if buf.len() < 46 {
+        return format!("payload too short for fixed block: {} bytes; head: {}", buf.len(), hex(&buf[..buf.len().min(32)]));
+    }
+    let r = Reader::new(buf);
+    let null_bits = r.u8_at(0).unwrap_or(0);
+    let crc = r.u32_at(1).unwrap_or(0);
+    let build = r.i32_at(5).unwrap_or(0);
+    let version = r.fixed_string_at(9, 20, true).unwrap_or_else(|_| "<invalid>".into());
+    let client_type = r.u8_at(29).unwrap_or(0);
+    let slots: Vec<i32> = (0..5).map(|i| r.i32_at(30 + 4 * i).unwrap_or(0)).collect();
+    format!(
+        "len={} nullbits={null_bits:08b} crc={crc} (ours {PROTOCOL_CRC}) build={build} (ours {PROTOCOL_BUILD_NUMBER}) \
+         version={version:?} client_type={client_type} slots[30..50]={slots:?} head={}",
+        buf.len(),
+        hex(&buf[..64.min(buf.len())])
+    )
+}
+
 /// Packet 363, client -> server. Sent only in offline/insecure auth mode,
 /// in response to RequestInsecurePlayerOptions. The optional PlayerSkin
 /// structure is captured raw for now (it is the final field, so its bytes

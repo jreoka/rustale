@@ -173,6 +173,7 @@ impl Session {
             }
             Err(e) => {
                 eprintln!("[server] undecodable Connect: {e}");
+                eprintln!("[server] Connect diagnosis: {}", hytale_protocol::packets::diagnose_connect(payload));
                 out.drop_stream = true;
             }
         }

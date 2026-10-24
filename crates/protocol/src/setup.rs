@@ -476,15 +476,63 @@ fn block_hitboxes_init_packet() -> Vec<u8> {
     w.buf
 }
 
+/// A minimal Fluid (47-byte header: 23 fixed + 6 slots), mirroring
+/// Fluid.toPacket(): Id, CubeTextures (Unknown default) and
+/// ShaderEffect ([None]) always present; MaxFluidLevel 8, Opacity
+/// Solid, DrawType Liquid, FX/sound indexes 0.
+fn fluid(id: &str) -> Vec<u8> {
+    let mut fixed = [0u8; 23];
+    fixed[0] = 0x1C; // null bits: Id | CubeTextures | ShaderEffect
+    fixed[1..5].copy_from_slice(&8i32.to_le_bytes()); // MaxFluidLevel
+    fixed[11] = 1; // DrawType Liquid
+    let mut w = Writer::new();
+    w.buf.extend_from_slice(&fixed);
+    // Slots: Id 0, CubeTextures 1, ShaderEffect 2, rest absent.
+    let slots: Vec<usize> = (0..6).map(|_| w.reserve_offset()).collect();
+    let var_start = w.position();
+    debug_assert_eq!(var_start, 47);
+    for (i, slot) in slots.iter().enumerate() {
+        if i > 2 {
+            w.write_offset_at(*slot, -1);
+        }
+    }
+    w.write_offset_at(slots[0], (w.position() - var_start) as i32);
+    w.write_string(id, 4096).expect("short id");
+    w.write_offset_at(slots[1], (w.position() - var_start) as i32);
+    w.write_var_int(1);
+    w.buf.extend_from_slice(&block_textures("BlockTextures/Unknown.png"));
+    w.write_offset_at(slots[2], (w.position() - var_start) as i32);
+    w.write_var_int(1); // ShaderEffect = [None]
+    w.write_u8(0);
+    w.buf
+}
+
+/// UpdateFluids (83) with the built-in entries the reference always
+/// registers: id 0 "Empty", id 1 "Unknown". The block/fluid voxel
+/// preparation assumes they exist.
+fn fluids_init_packet() -> Vec<u8> {
+    let mut w = Writer::new();
+    w.write_u8(0x01); // null bits: dict present
+    w.write_u8(0); // Type = Init
+    w.write_i32(2); // MaxId = next index
+    w.write_var_int(2);
+    w.write_i32(0);
+    w.buf.extend_from_slice(&fluid("Empty"));
+    w.write_i32(1);
+    w.buf.extend_from_slice(&fluid("Unknown"));
+    w.buf
+}
+
 /// All 52 store Init packets as (packet_id, payload) pairs, in ID order.
-/// Every store is empty except BlockTypes (the two flat-world blocks)
-/// and BlockHitboxes (the full-cube hitbox they reference).
+/// Every store is empty except BlockTypes, BlockHitboxes and Fluids,
+/// which carry the built-in entries the client assumes exist.
 pub fn empty_registry_init_packets() -> Vec<(i32, Vec<u8>)> {
     UPDATE_SPECS
         .iter()
         .map(|s| match s.id {
             40 => (s.id, block_types_init_packet()),
             41 => (s.id, block_hitboxes_init_packet()),
+            83 => (s.id, fluids_init_packet()),
             _ => (s.id, serialize_empty_init(s)),
         })
         .collect()

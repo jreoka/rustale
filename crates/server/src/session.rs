@@ -246,8 +246,7 @@ pub struct Session {
     phase: Phase,
     username: Option<String>,
     uuid: Option<[u8; 16]>,
-    /// The player's skin as a serialized PlayerSkin structure,
-    /// echoed back in the spawn's PlayerSkinUpdate (the reference
+    /// The player's skin as a serialized PlayerSkin structure,    /// echoed back in the spawn's PlayerSkinUpdate (the reference
     /// keeps the skin from the account/dev-client options on the
     /// player and sendPlayerSelf sends it; a null skin leaves the
     /// client without a character model).
@@ -256,6 +255,7 @@ pub struct Session {
     sent_assets: bool,
     chunks_sent: bool,
     teleport_sent: bool,
+    movement_seen: u32,
     auth: Option<Arc<SessionAuthCtx>>,
     /// The world identity sent in JoinWorld. Random per session: the
     /// client keys persisted per-world state (map/exploration caches)
@@ -304,6 +304,7 @@ impl Default for Session {
             sent_assets: false,
             chunks_sent: false,
             teleport_sent: false,
+            movement_seen: 0,
             auth: None,
             world_uuid: fresh_world_uuid(),
         }
@@ -368,6 +369,7 @@ impl Session {
             },
             ids::SETUP_FINALIZE => self.on_setup_finalize(&mut out),
             ids::CLIENT_READY => self.on_client_ready(payload, &mut out),
+            ids::CLIENT_MOVEMENT => self.on_client_movement(payload),
             other => {
                 if matches!(self.phase, Phase::InWorld | Phase::AwaitClientReady) {
                     println!("[server] in-world packet id={other} ({} bytes)", payload.len());
@@ -377,6 +379,41 @@ impl Session {
             }
         }
         out
+    }
+
+    /// Decode and log a ClientMovement (108): fixed 117-byte layout
+    /// (null bits, MovementStates @2, HalfFloatPosition @6,
+    /// AbsolutePosition @12, BodyOrientation @36, LookOrientation
+    /// @48, TeleportAck @60, WishMovement @61, Velocity @85,
+    /// MountedTo @109). Diagnostic for now: whether the client's
+    /// absolute position moves with its wish tells us if the client
+    /// predicts movement locally or waits for the server to drive
+    /// its entity.
+    fn on_client_movement(&mut self, payload: &[u8]) {
+        self.movement_seen += 1;
+        if payload.len() < 109 {
+            return;
+        }
+        let f64_at = |o: usize| f64::from_le_bytes(payload[o..o + 8].try_into().unwrap());
+        let f32_at = |o: usize| f32::from_le_bytes(payload[o..o + 4].try_into().unwrap());
+        let bits = u16::from_le_bytes([payload[0], payload[1]]);
+        let states = u32::from_le_bytes(payload[2..6].try_into().unwrap());
+        let abs = [f64_at(12), f64_at(20), f64_at(28)];
+        let look = [f32_at(48), f32_at(52), f32_at(56)];
+        let wish = [f64_at(61), f64_at(69), f64_at(77)];
+        let vel = [f64_at(85), f64_at(93), f64_at(101)];
+        let wish_active = wish.iter().any(|v| *v != 0.0);
+        if wish_active || self.movement_seen % 100 == 0 {
+            println!(
+                "[server] movement #{} bits={bits:09b} states={states:08x} abs=({:.2},{:.2},{:.2}) look=({:.2},{:.2},{:.2}) wish=({:.2},{:.2},{:.2}) vel=({:.2},{:.2},{:.2}) ack={}",
+                self.movement_seen,
+                abs[0], abs[1], abs[2],
+                look[0], look[1], look[2],
+                wish[0], wish[1], wish[2],
+                vel[0], vel[1], vel[2],
+                if bits & 0x20 != 0 { payload[60].to_string() } else { "-".into() },
+            );
+        }
     }
 
     fn on_connect(&mut self, payload: &[u8], out: &mut SessionOutcome) {

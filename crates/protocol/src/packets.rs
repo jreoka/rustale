@@ -42,6 +42,7 @@ pub mod ids {
     pub const JOIN_WORLD: i32 = 104;
     pub const CLIENT_TELEPORT: i32 = 109;
     pub const CLIENT_READY: i32 = 105;
+    pub const CLIENT_MOVEMENT: i32 = 108;
     pub const SET_CHUNK: i32 = 131;
     pub const SET_CHUNK_HEIGHTMAP: i32 = 132;
     pub const SET_COLUMN: i32 = 138;

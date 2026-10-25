@@ -791,17 +791,25 @@ impl Session {
                     SetColumn::uniform(cx, cz, GROUND_TOP_Y).serialize(),
                 ));
                 for sy in 0..HEIGHT_SECTIONS {
+                    // Local light data is present-but-empty ([0] = the
+                    // ChunkLightData hasLight flag clear). The reference
+                    // enables SEND_LOCAL_LIGHTING_DATA, and the client's
+                    // spawn-readiness count only credits columns whose
+                    // sections carry a light object.
                     let chunk = if sy <= 1 {
                         SetChunk {
                             x: cx,
                             y: sy,
                             z: cz,
-                            local_light: None,
+                            local_light: Some(vec![0]),
                             global_light: None,
                             data: Some(ground_data.clone()),
                         }
                     } else {
-                        SetChunk::air(cx, sy, cz)
+                        SetChunk {
+                            local_light: Some(vec![0]),
+                            ..SetChunk::air(cx, sy, cz)
+                        }
                     };
                     if let Ok(payload) = chunk.serialize() {
                         out.chunk_packets.push((ids::SET_CHUNK, payload));

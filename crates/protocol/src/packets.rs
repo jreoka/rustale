@@ -48,6 +48,7 @@ pub mod ids {
     pub const SET_CHUNK_ENVIRONMENTS: i32 = 134;
     pub const SET_FLUIDS: i32 = 136;
     pub const CLEAR_CHUNKS: i32 = 139;
+    pub const SET_ABSENT_CHUNKS: i32 = 181;
     pub const SET_ENTITY_SEED: i32 = 160;
     pub const ENTITY_UPDATES: i32 = 161;
     pub const VOICE_CONFIG: i32 = 452;

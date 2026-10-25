@@ -21,7 +21,7 @@ use rustale_protocol::setup::{
 };
 use rustale_protocol::world::{
     uniform_section_data, AddToServerPlayerList, ClientReady, JoinWorld, ServerPlayerListPlayer,
-    SetChunk, SetChunkEnvironments, SetColumn, SetClientId, SetFluids,
+    SetAbsentChunks, SetChunk, SetChunkEnvironments, SetColumn, SetClientId, SetFluids,
     VoiceConfig, UpdateWorldMapSettings,
     SetEntitySeed, SetTimeDilation, SetUpdateRate, UpdateFeatures, UpdatePostFxSettings,
     UpdateSunSettings, WorldGameplayConfig, HEIGHT_SECTIONS,
@@ -788,8 +788,8 @@ impl Session {
     }
 
     /// Queue the flat test world on the Chunks stream: for every column in
-    /// radius around spawn, a heightmap and all 10 sections (two solid
-    /// ground sections, the rest air with null data).
+    /// radius around spawn, a heightmap, the two solid ground sections,
+    /// and a SetAbsentChunks for the eight sections above them.
     fn stream_flat_world(&self, out: &mut SessionOutcome) {
         let radius = self
             .view_radius_chunks()
@@ -803,34 +803,29 @@ impl Session {
                     ids::SET_COLUMN,
                     SetColumn::uniform(cx, cz, GROUND_TOP_Y).serialize(),
                 ));
-                for sy in 0..HEIGHT_SECTIONS {
+                // Only the two ground sections carry data. The sections
+                // above them back no data at all: the reference reports
+                // those per column with one batched SetAbsentChunks so
+                // the client treats the cells as definitively air. A
+                // SetChunk with null data instead leaves the client's
+                // section pending forever, and its spawn-readiness count
+                // (every section around the spawn must resolve) stalls.
+                for sy in 0..=1 {
                     // Local light: a uniform full-bright ChunkLightData
                     // octree (hasLight byte, root mask 0 = all eight
                     // octants are leaves, each 0xFFFF = R/G/B/sky all at
-                    // the 0xF max). The client's spawn-readiness count
-                    // only credits columns whose sections carry light,
-                    // and a present-but-empty marker ([0]) does not count.
-                    let chunk = if sy <= 1 {
-                        SetChunk {
-                            x: cx,
-                            y: sy,
-                            z: cz,
-                            local_light: Some(full_bright_light()),
-                            global_light: None,
-                            data: Some(ground_data.clone()),
-                        }
-                    } else {
-                        SetChunk {
-                            local_light: Some(full_bright_light()),
-                            ..SetChunk::air(cx, sy, cz)
-                        }
+                    // the 0xF max).
+                    let chunk = SetChunk {
+                        x: cx,
+                        y: sy,
+                        z: cz,
+                        local_light: Some(full_bright_light()),
+                        global_light: None,
+                        data: Some(ground_data.clone()),
                     };
                     if let Ok(payload) = chunk.serialize() {
                         out.chunk_packets.push((ids::SET_CHUNK, payload));
                     }
-                    // The reference sends the fluid section for every
-                    // section too; without it the client never counts
-                    // the section as arrived.
                     out.chunk_packets.push((
                         ids::SET_FLUIDS,
                         SetFluids::empty(cx, sy, cz).serialize(),
@@ -840,6 +835,15 @@ impl Session {
                         SetChunkEnvironments::uniform(cx, sy, cz, 0).serialize(),
                     ));
                 }
+                out.chunk_packets.push((
+                    ids::SET_ABSENT_CHUNKS,
+                    SetAbsentChunks {
+                        x: cx,
+                        z: cz,
+                        ys: (2..HEIGHT_SECTIONS).collect(),
+                    }
+                    .serialize(),
+                ));
                 columns += 1;
             }
         }
@@ -938,7 +942,7 @@ mod tests {
                 ids::SET_UPDATE_RATE,
             ]
         );
-        assert_eq!(out.chunk_packets.len(), 25 * 25 * 31 + 1);
+        assert_eq!(out.chunk_packets.len(), 25 * 25 * 8 + 1);
         assert_eq!(out.chunk_packets[0].0, ids::VIEW_RADIUS);
         assert_eq!(out.chunk_packets[0].1, 384i32.to_le_bytes().to_vec());
         assert_eq!(out.chunk_packets[1].0, ids::SET_COLUMN);

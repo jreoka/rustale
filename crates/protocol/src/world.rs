@@ -472,6 +472,22 @@ mod tests {
     }
 
     #[test]
+    fn set_absent_chunks_bytes() {
+        let payload = SetAbsentChunks { x: -1, z: 2, ys: vec![2, 3] }.serialize();
+        assert_eq!(
+            payload,
+            vec![
+                0x01, // ys present
+                0xFF, 0xFF, 0xFF, 0xFF, // x = -1
+                2, 0, 0, 0, // z
+                0x02, // count
+                2, 0, 0, 0, // y = 2
+                3, 0, 0, 0, // y = 3
+            ]
+        );
+    }
+
+    #[test]
     fn uniform_section_data_shape() {
         let data = uniform_section_data(1);
         assert_eq!(data.len(), 1 + 2 + 7 + SECTION_BLOCKS + 2);
@@ -562,6 +578,32 @@ impl SetFluids {
         if let Some(data) = &self.data {
             w.write_var_int(data.len() as u32);
             w.buf.extend_from_slice(data);
+        }
+        w.buf
+    }
+}
+
+/// SetAbsentChunks (181, zstd, Chunks channel): marks whole chunk
+/// sections as definitively absent (backing no data) for one column,
+/// so the client treats those cells as resolved air rather than
+/// pending. Nullbits @0 (bit0 = Ys present), x @1, z @5, then the Y
+/// list inline (single variable field): varint count (max 128) +
+/// i32 LE section Ys.
+pub struct SetAbsentChunks {
+    pub x: i32,
+    pub z: i32,
+    pub ys: Vec<i32>,
+}
+
+impl SetAbsentChunks {
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.write_u8(0x01);
+        w.write_i32(self.x);
+        w.write_i32(self.z);
+        w.write_var_int(self.ys.len() as u32);
+        for y in &self.ys {
+            w.write_i32(*y);
         }
         w.buf
     }

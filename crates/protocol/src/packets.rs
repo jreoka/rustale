@@ -33,6 +33,8 @@ pub mod ids {
     pub const SET_UPDATE_RATE: i32 = 29;
     pub const SET_TIME_DILATION: i32 = 30;
     pub const UPDATE_FEATURES: i32 = 31;
+    pub const UPDATE_ITEM_CATEGORIES: i32 = 56;
+    pub const UPDATE_FIELDCRAFT_CATEGORIES: i32 = 58;
     pub const UPDATE_TRANSLATIONS: i32 = 64;
     pub const VIEW_RADIUS: i32 = 32;
     pub const SETUP_FINALIZE: i32 = 33;

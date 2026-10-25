@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 use rustale_protocol::packets::ids;
 use rustale_protocol::setup::{
-    empty_registry_init_packets, update_translations_init, ConnectAccept, RequestAssets, ServerInfo,
-    ViewRadius, WorldLoadProgress, WorldSettings,
+    empty_registry_init_packets, item_categories_init, update_translations_init, ConnectAccept,
+    ItemCategory, RequestAssets, ServerInfo, SubCategoryDefinition, ViewRadius, WorldLoadProgress,
+    WorldSettings,
 };
 use rustale_protocol::world::{
     uniform_section_data, AddToServerPlayerList, ClientReady, JoinWorld, ServerPlayerListPlayer,
@@ -69,6 +70,92 @@ fn translation_entries() -> &'static [(String, String)] {
             })
             .collect()
     })
+}
+
+/// The stock item-category trees, extracted from the client's own
+/// install: `UpdateItemCategories` (56, the CreativeLibrary tree) and
+/// `UpdateFieldcraftCategories` (58) full Inits, replacing the
+/// generic empty-array payloads in the registry burst.
+fn item_category_inits() -> &'static [(i32, Vec<u8>)] {
+    static INITS: std::sync::OnceLock<Vec<(i32, Vec<u8>)>> = std::sync::OnceLock::new();
+    INITS.get_or_init(|| {
+        let json = include_str!("../assets/categories.json");
+        let root: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(json).expect("embedded categories.json parses");
+        vec![
+            (
+                ids::UPDATE_ITEM_CATEGORIES,
+                item_categories_init(&category_store(&root, "Item/Category/CreativeLibrary/")),
+            ),
+            (
+                ids::UPDATE_FIELDCRAFT_CATEGORIES,
+                item_categories_init(&category_store(&root, "Item/Category/Fieldcraft/")),
+            ),
+        ]
+    })
+}
+
+fn category_store(
+    root: &serde_json::Map<String, serde_json::Value>,
+    prefix: &str,
+) -> Vec<ItemCategory> {
+    let mut categories: Vec<ItemCategory> = root
+        .iter()
+        .filter(|(path, _)| path.starts_with(prefix))
+        .map(|(path, value)| {
+            let stem = path
+                .rsplit('/')
+                .next()
+                .unwrap_or(path)
+                .strip_suffix(".json")
+                .unwrap_or(path)
+                .to_string();
+            json_category(value, Some(stem))
+        })
+        .collect();
+    categories.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.id.cmp(&b.id)));
+    categories
+}
+
+fn json_category(value: &serde_json::Value, fallback_id: Option<String>) -> ItemCategory {
+    let get_str = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_string);
+    // ItemCategory.afterDecode sorts children by Order (stable).
+    let mut children: Vec<ItemCategory> = value
+        .get("Children")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().map(|c| json_category(c, None)).collect())
+        .unwrap_or_default();
+    children.sort_by_key(|c| c.order);
+    let sub_categories = value
+        .get("SubCategories")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|s| SubCategoryDefinition {
+                    id: s.get("Id").and_then(|v| v.as_str()).map(str::to_string),
+                    name: s.get("Name").and_then(|v| v.as_str()).map(str::to_string),
+                    description: s
+                        .get("Description")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    order: s.get("Order").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    ItemCategory {
+        id: get_str("Id").or(fallback_id),
+        name: get_str("Name"),
+        icon: get_str("Icon"),
+        order: value.get("Order").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+        info_display_mode: match get_str("InfoDisplayMode").as_deref() {
+            Some("Adjacent") => 1,
+            Some("None") => 2,
+            _ => 0, // Tooltip, the asset default
+        },
+        children,
+        sub_categories,
+    }
 }
 
 use crate::auth::JwtValidator;
@@ -492,6 +579,13 @@ impl Session {
         // UpdateTranslations with the full catalog Init.
         if let Some(slot) = burst.iter_mut().find(|(id, _)| *id == ids::UPDATE_TRANSLATIONS) {
             slot.1 = update_translations_init(translation_entries());
+        }
+        // The stock category trees ride their registry slots the
+        // same way (packets 56 and 58).
+        for (id, payload) in item_category_inits() {
+            if let Some(slot) = burst.iter_mut().find(|(pid, _)| pid == id) {
+                slot.1 = payload.clone();
+            }
         }
         out.packets.extend(burst);
         let progress = WorldLoadProgress {

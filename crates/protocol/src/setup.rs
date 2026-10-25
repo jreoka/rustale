@@ -609,6 +609,138 @@ pub fn empty_registry_init_packets() -> Vec<(i32, Vec<u8>)> {
         .collect()
 }
 
+/// One SubCategoryDefinition (structure inside ItemCategory).
+/// Layout verified against the generated accessors: null-bits byte
+/// (bit 0 Id, bit 1 Name, bit 2 Description), Order i32 at 1, three
+/// offset slots at 5/9/13, variable block at 17.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubCategoryDefinition {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub order: i32,
+}
+
+impl SubCategoryDefinition {
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        let mut null_bits = 0u8;
+        if self.id.is_some() {
+            null_bits |= 0x01;
+        }
+        if self.name.is_some() {
+            null_bits |= 0x02;
+        }
+        if self.description.is_some() {
+            null_bits |= 0x04;
+        }
+        w.write_u8(null_bits);
+        w.write_i32(self.order);
+        let slots: Vec<usize> = (0..3).map(|_| w.reserve_offset()).collect();
+        let var_start = w.position();
+        for (slot, value) in slots.iter().zip([&self.id, &self.name, &self.description]) {
+            match value {
+                Some(s) => {
+                    w.write_offset_at(*slot, (w.position() - var_start) as i32);
+                    w.write_string(s, 4096000).expect("subcategory string within limits");
+                }
+                None => w.write_offset_at(*slot, -1),
+            }
+        }
+        w.buf
+    }
+}
+
+/// One ItemCategory (recursive). Layout verified against the
+/// generated accessors: null-bits byte (bit 0 Id, bit 1 Name, bit 2
+/// Icon, bit 3 Children, bit 4 SubCategories), Order i32 at 1,
+/// InfoDisplayMode byte at 5 (Tooltip 0, Adjacent 1, None 2), five
+/// offset slots at 6/10/14/18/22, variable block at 26. Children and
+/// SubCategories are omitted entirely when empty, as in toPacket().
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemCategory {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub icon: Option<String>,
+    pub order: i32,
+    pub info_display_mode: u8,
+    pub children: Vec<ItemCategory>,
+    pub sub_categories: Vec<SubCategoryDefinition>,
+}
+
+impl ItemCategory {
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        let mut null_bits = 0u8;
+        if self.id.is_some() {
+            null_bits |= 0x01;
+        }
+        if self.name.is_some() {
+            null_bits |= 0x02;
+        }
+        if self.icon.is_some() {
+            null_bits |= 0x04;
+        }
+        if !self.children.is_empty() {
+            null_bits |= 0x08;
+        }
+        if !self.sub_categories.is_empty() {
+            null_bits |= 0x10;
+        }
+        w.write_u8(null_bits);
+        w.write_i32(self.order);
+        w.write_u8(self.info_display_mode);
+        let slots: Vec<usize> = (0..5).map(|_| w.reserve_offset()).collect();
+        let var_start = w.position();
+        for (i, slot) in slots.iter().enumerate() {
+            let present = match i {
+                0 => self.id.is_some(),
+                1 => self.name.is_some(),
+                2 => self.icon.is_some(),
+                3 => !self.children.is_empty(),
+                _ => !self.sub_categories.is_empty(),
+            };
+            if !present {
+                w.write_offset_at(*slot, -1);
+                continue;
+            }
+            w.write_offset_at(*slot, (w.position() - var_start) as i32);
+            match i {
+                0 => w.write_string(self.id.as_ref().unwrap(), 4096000).expect("category id within limits"),
+                1 => w.write_string(self.name.as_ref().unwrap(), 4096000).expect("category name within limits"),
+                2 => w.write_string(self.icon.as_ref().unwrap(), 4096000).expect("category icon within limits"),
+                3 => {
+                    w.write_var_int(self.children.len() as u32);
+                    for child in &self.children {
+                        w.buf.extend_from_slice(&child.serialize());
+                    }
+                }
+                _ => {
+                    w.write_var_int(self.sub_categories.len() as u32);
+                    for sub in &self.sub_categories {
+                        w.buf.extend_from_slice(&sub.serialize());
+                    }
+                }
+            }
+        }
+        w.buf
+    }
+}
+
+/// UpdateItemCategories (56) / UpdateFieldcraftCategories (58) Init:
+/// null-bits byte (bit 0 = array present), Type byte 0 (Init), then
+/// the single variable field inline: varint count + entries.
+pub fn item_categories_init(categories: &[ItemCategory]) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.write_u8(0x01);
+    w.write_u8(0);
+    w.write_var_int(categories.len() as u32);
+    for category in categories {
+        w.buf.extend_from_slice(&category.serialize());
+    }
+    w.buf
+}
+
 /// UpdateTranslations (64) Init with a full message catalog, as the
 /// reference's I18nModule sends right after the registry: null-bits
 /// byte (bit 0 = dict present), Type byte 0 (Init), then the single
@@ -630,6 +762,72 @@ pub fn update_translations_init(entries: &[(String, String)]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn item_category_leaf_bytes() {
+        let leaf = ItemCategory {
+            id: Some("Blocks".to_string()),
+            name: None,
+            icon: Some("Icons/ItemCategories/Natural.png".to_string()),
+            order: 0,
+            info_display_mode: 0,
+            children: vec![],
+            sub_categories: vec![],
+        };
+        let payload = item_categories_init(&[leaf]);
+        let mut expected = vec![0x01, 0x00, 0x01]; // array present, Init, one entry
+        expected.push(0x05); // null bits: Id + Icon
+        expected.extend_from_slice(&0i32.to_le_bytes()); // Order
+        expected.push(0); // InfoDisplayMode = Tooltip
+        expected.extend_from_slice(&0i32.to_le_bytes()); // Id offset 0
+        expected.extend_from_slice(&(-1i32).to_le_bytes()); // Name absent
+        expected.extend_from_slice(&7i32.to_le_bytes()); // Icon offset: after "Blocks" string (1 + 6)
+        expected.extend_from_slice(&(-1i32).to_le_bytes()); // Children absent
+        expected.extend_from_slice(&(-1i32).to_le_bytes()); // SubCategories absent
+        expected.extend_from_slice(&[6, b'B', b'l', b'o', b'c', b'k', b's']);
+        expected.push(32);
+        expected.extend_from_slice(b"Icons/ItemCategories/Natural.png");
+        assert_eq!(payload, expected);
+    }
+
+    #[test]
+    fn item_category_tree_offsets() {
+        let child = ItemCategory {
+            id: Some("C".to_string()),
+            name: None,
+            icon: None,
+            order: 0,
+            info_display_mode: 0,
+            children: vec![],
+            sub_categories: vec![],
+        };
+        assert_eq!(child.serialize().len(), 28);
+        let sub = SubCategoryDefinition {
+            id: Some("S".to_string()),
+            name: Some("n".to_string()),
+            description: None,
+            order: 10,
+        };
+        assert_eq!(sub.serialize().len(), 21);
+        let parent = ItemCategory {
+            id: Some("P".to_string()),
+            name: None,
+            icon: None,
+            order: 3,
+            info_display_mode: 1,
+            children: vec![child],
+            sub_categories: vec![sub],
+        };
+        let bytes = parent.serialize();
+        assert_eq!(bytes.len(), 26 + 2 + 29 + 22);
+        assert_eq!(bytes[0], 0x19); // Id + Children + SubCategories
+        let slot = |i: usize| i32::from_le_bytes(bytes[6 + 4 * i..10 + 4 * i].try_into().unwrap());
+        assert_eq!(slot(0), 0); // Id first
+        assert_eq!(slot(1), -1); // Name absent
+        assert_eq!(slot(2), -1); // Icon absent
+        assert_eq!(slot(3), 2); // Children after the 2-byte Id string
+        assert_eq!(slot(4), 2 + 29); // SubCategories after the Children array
+    }
 
     #[test]
     fn update_translations_init_bytes() {

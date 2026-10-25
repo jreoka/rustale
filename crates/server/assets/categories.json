@@ -1,0 +1,343 @@
+{
+ "Item/Category/CreativeLibrary/Blocks.json": {
+  "Icon": "Icons/ItemCategories/Natural.png",
+  "Order": 0,
+  "Children": [
+   {
+    "Id": "Rocks",
+    "Name": "server.ui.itemcategory.rocks",
+    "Icon": "Icons/ItemCategories/Blocks.png"
+   },
+   {
+    "Id": "Wood",
+    "Name": "server.ui.itemcategory.wood",
+    "Icon": "Icons/ItemCategories/Wood.png",
+    "SubCategories": [
+     {
+      "Id": "BlockSets",
+      "Name": "server.ui.itemcategory.subcategory.wood.blockSets.name",
+      "Order": 10,
+      "Description": "server.ui.itemcategory.subcategory.wood.blockSets.description"
+     },
+     {
+      "Id": "Trees",
+      "Name": "server.ui.itemcategory.subcategory.wood.trees.name",
+      "Order": 20,
+      "Description": "server.ui.itemcategory.subcategory.wood.trees.description"
+     }
+    ]
+   },
+   {
+    "Id": "Metal",
+    "Name": "server.ui.itemcategory.metal",
+    "Icon": "Icons/ItemCategories/Metal.png"
+   },
+   {
+    "Id": "Cloth",
+    "Name": "server.ui.itemcategory.cloth",
+    "Icon": "Icons/ItemCategories/Cloth.png",
+    "SubCategories": [
+     {
+      "Id": "BlockSets",
+      "Name": "server.ui.itemcategory.subcategory.cloth.blockSets.name",
+      "Order": 10,
+      "Description": "server.ui.itemcategory.subcategory.cloth.blockSets.description"
+     },
+     {
+      "Id": "RoofBlocks",
+      "Name": "server.ui.itemcategory.subcategory.cloth.roofBlocks.name",
+      "Order": 20,
+      "Description": "server.ui.itemcategory.subcategory.cloth.roofBlocks.description"
+     }
+    ]
+   },
+   {
+    "Id": "Soils",
+    "Name": "server.ui.itemcategory.soils",
+    "Icon": "Icons/ItemCategories/Soil.png",
+    "SubCategories": [
+     {
+      "Id": "GrassAndDirt",
+      "Name": "server.ui.itemcategory.subcategory.soils.grassAndDirt.name",
+      "Order": 10,
+      "Description": "server.ui.itemcategory.subcategory.soils.grassAndDirt.description"
+     },
+     {
+      "Id": "BlockSets",
+      "Name": "server.ui.itemcategory.subcategory.soils.blockSets.name",
+      "Order": 20,
+      "Description": "server.ui.itemcategory.subcategory.soils.blockSets.description"
+     },
+     {
+      "Id": "ColouredClay",
+      "Name": "server.ui.itemcategory.subcategory.soils.colouredClay.name",
+      "Order": 30,
+      "Description": "server.ui.itemcategory.subcategory.soils.colouredClay.description"
+     }
+    ]
+   },
+   {
+    "Id": "Ores",
+    "Name": "server.ui.itemcategory.ores",
+    "Icon": "Icons/ItemCategories/Natural-Ore.png",
+    "SubCategories": [
+     {
+      "Id": "Ore",
+      "Name": "server.ui.itemcategory.subcategory.ores.ore.name",
+      "Order": 10,
+      "Description": "server.ui.itemcategory.subcategory.ores.ore.description"
+     },
+     {
+      "Id": "Crystal",
+      "Name": "server.ui.itemcategory.subcategory.ores.crystal.name",
+      "Order": 20,
+      "Description": "server.ui.itemcategory.subcategory.ores.crystal.description"
+     },
+     {
+      "Id": "Gem",
+      "Name": "server.ui.itemcategory.subcategory.ores.gem.name",
+      "Order": 30,
+      "Description": "server.ui.itemcategory.subcategory.ores.gem.description"
+     }
+    ]
+   },
+   {
+    "Id": "Plants",
+    "Name": "server.ui.itemcategory.plants",
+    "Icon": "Icons/ItemCategories/Natural-Vegetal.png"
+   },
+   {
+    "Id": "Fluids",
+    "Name": "server.ui.itemcategory.fluids",
+    "Icon": "Icons/ItemCategories/Natural-Fluid.png"
+   },
+   {
+    "Id": "Portals",
+    "Name": "server.ui.itemcategory.portals",
+    "Icon": "Icons/ItemCategories/Portal.png"
+   },
+   {
+    "Id": "Deco",
+    "Name": "server.ui.itemcategory.deco",
+    "Icon": "Icons/ItemCategories/Natural-Fire.png"
+   }
+  ]
+ },
+ "Item/Category/CreativeLibrary/Furniture.json": {
+  "Icon": "Icons/ItemCategories/Furniture.png",
+  "Order": 1,
+  "Children": [
+   {
+    "Id": "Benches",
+    "Name": "server.ui.itemcategory.benches",
+    "Icon": "Icons/ItemCategories/Bench.png"
+   },
+   {
+    "Id": "Containers",
+    "Name": "server.ui.itemcategory.containers",
+    "Icon": "Icons/ItemCategories/Container.png"
+   },
+   {
+    "Id": "Furniture",
+    "Name": "server.ui.itemcategory.furniture",
+    "Icon": "Icons/ItemCategories/Build-Furnitures.png"
+   },
+   {
+    "Id": "Doors",
+    "Name": "server.ui.itemcategory.doors",
+    "Icon": "Icons/ItemCategories/Doors.png"
+   },
+   {
+    "Id": "Lighting",
+    "Name": "server.ui.itemcategory.lighting",
+    "Icon": "Icons/ItemCategories/Build-Lights.png"
+   },
+   {
+    "Id": "Beds",
+    "Name": "server.ui.itemcategory.beds",
+    "Icon": "Icons/ItemCategories/Build-Beds.png"
+   },
+   {
+    "Id": "Shelves",
+    "Name": "server.ui.itemcategory.shelves",
+    "Icon": "Icons/ItemCategories/Shelves.png"
+   },
+   {
+    "Id": "Signs",
+    "Name": "server.ui.itemcategory.signs",
+    "Icon": "Icons/ItemCategories/Signs.png"
+   }
+  ]
+ },
+ "Item/Category/CreativeLibrary/Items.json": {
+  "Icon": "Icons/ItemCategories/Items.png",
+  "Order": 2,
+  "Children": [
+   {
+    "Id": "Tools",
+    "Name": "server.ui.itemcategory.tools",
+    "Icon": "Icons/ItemCategories/Items-Tools.png"
+   },
+   {
+    "Id": "Weapons",
+    "Name": "server.ui.itemcategory.weapons",
+    "Icon": "Icons/ItemCategories/Items-Weapons.png"
+   },
+   {
+    "Id": "Armors",
+    "Name": "server.ui.itemcategory.armors",
+    "Icon": "Icons/ItemCategories/Items-Armor.png"
+   },
+   {
+    "Id": "Foods",
+    "Name": "server.ui.itemcategory.foods",
+    "Icon": "Icons/ItemCategories/Items-Food.png"
+   },
+   {
+    "Id": "Potions",
+    "Name": "server.ui.itemcategory.potions",
+    "Icon": "Icons/ItemCategories/Items-Potion.png"
+   },
+   {
+    "Id": "Recipes",
+    "Name": "server.ui.itemcategory.recipes",
+    "Icon": "Icons/ItemCategories/Items-Recipe.png"
+   },
+   {
+    "Id": "Ingredients",
+    "Name": "server.ui.itemcategory.ingredients",
+    "Icon": "Icons/ItemCategories/Items-Ingredients.png"
+   }
+  ]
+ },
+ "Item/Category/CreativeLibrary/Tool.json": {
+  "Icon": "Icons/ItemCategories/Editor.png",
+  "Order": 3,
+  "Children": [
+   {
+    "Id": "BuilderTool",
+    "Name": "server.ui.itemcategory.basicTools",
+    "Icon": "Icons/ItemCategories/Builder Tools.png",
+    "InfoDisplayMode": "Adjacent",
+    "SubCategories": [
+     {
+      "Id": "BasicTools",
+      "Name": "server.ui.itemcategory.subcategory.basicTools.name",
+      "Order": 10,
+      "Description": "server.ui.itemcategory.subcategory.basicTools.description"
+     },
+     {
+      "Id": "Terrain",
+      "Name": "server.ui.itemcategory.subcategory.terrain.name",
+      "Order": 20,
+      "Description": "server.ui.itemcategory.subcategory.terrain.description"
+     },
+     {
+      "Id": "Decoration",
+      "Name": "server.ui.itemcategory.subcategory.decoration.name",
+      "Order": 30,
+      "Description": "server.ui.itemcategory.subcategory.decoration.description"
+     },
+     {
+      "Id": "Buildings",
+      "Name": "server.ui.itemcategory.subcategory.buildings.name",
+      "Order": 40,
+      "Description": "server.ui.itemcategory.subcategory.buildings.description"
+     }
+    ]
+   },
+   {
+    "Id": "BuilderToolSecondPage",
+    "Name": "server.ui.itemcategory.specializedTools",
+    "Icon": "Icons/ItemCategories/Builder Tools.png",
+    "InfoDisplayMode": "Adjacent",
+    "SubCategories": [
+     {
+      "Id": "SpecializedTools",
+      "Name": "server.ui.itemcategory.subcategory.specializedTools.name",
+      "Order": 10,
+      "Description": "server.ui.itemcategory.subcategory.specializedTools.description"
+     },
+     {
+      "Id": "MiscTools",
+      "Name": "server.ui.itemcategory.subcategory.miscTools.name",
+      "Order": 20,
+      "Description": "server.ui.itemcategory.subcategory.miscTools.description"
+     }
+    ]
+   },
+   {
+    "Id": "BrushFilters",
+    "Name": "server.ui.itemcategory.brushfilters",
+    "Icon": "Icons/ItemCategories/Scripted Brushes.png",
+    "InfoDisplayMode": "Adjacent",
+    "SubCategories": [
+     {
+      "Id": "BrushFilters",
+      "Name": "server.ui.itemcategory.subcategory.brushFilters.name",
+      "Order": 10,
+      "Description": "server.ui.itemcategory.subcategory.brushFilters.description"
+     }
+    ]
+   },
+   {
+    "Id": "PrefabEditing",
+    "Name": "server.ui.itemcategory.prefabEditing",
+    "Icon": "Icons/ItemCategories/Scripted Blocks.png",
+    "InfoDisplayMode": "Adjacent",
+    "SubCategories": [
+     {
+      "Id": "PrefabTools",
+      "Name": "server.ui.itemcategory.subcategory.prefabEditingTools.name",
+      "Order": 10,
+      "Description": "server.ui.itemcategory.subcategory.prefabEditingTools.description"
+     },
+     {
+      "Id": "PrefabBlocks",
+      "Name": "server.ui.itemcategory.subcategory.prefabEditingBlocks.name",
+      "Order": 20,
+      "Description": "server.ui.itemcategory.subcategory.prefabEditingBlocks.description"
+     }
+    ]
+   },
+   {
+    "Id": "Machinima",
+    "Name": "server.ui.itemcategory.machinima",
+    "Icon": "Icons/ItemCategories/Machinima.png",
+    "InfoDisplayMode": "Adjacent",
+    "SubCategories": [
+     {
+      "Id": "MachinimaTools",
+      "Name": "server.ui.itemcategory.subcategory.machinimaTools.name",
+      "Order": 10,
+      "Description": "server.ui.itemcategory.subcategory.machinimaTools.description"
+     }
+    ]
+   },
+   {
+    "Id": "TechnicalBlocks",
+    "Name": "server.ui.itemcategory.technicalBlocks",
+    "Icon": "Icons/ItemCategories/TechnicalBlocks.png",
+    "SubCategories": [
+     {
+      "Id": "BlockSets",
+      "Name": "server.ui.itemcategory.subcategory.blockSets.name",
+      "Order": 10,
+      "Description": "server.ui.itemcategory.subcategory.blockSets.description"
+     },
+     {
+      "Id": "LightSources",
+      "Name": "server.ui.itemcategory.subcategory.lightSources.name",
+      "Order": 20,
+      "Description": "server.ui.itemcategory.subcategory.lightSources.description"
+     }
+    ]
+   }
+  ]
+ },
+ "Item/Category/Fieldcraft/Tools.json": {
+  "Name": "server.benchCategories.workbench.tools",
+  "Icon": "Icons/CraftingCategories/Fieldcraft/Tool_Pickaxe_Crude.png",
+  "Order": 0
+ }
+}

@@ -13,6 +13,7 @@
 use std::sync::Arc;
 
 use rustale_protocol::packets::ids;
+use rustale_protocol::packets::ClientTeleport;
 use rustale_protocol::setup::{
     empty_registry_init_packets, item_categories_init, update_translations_init, ConnectAccept,
     ItemCategory, RequestAssets, ServerInfo, SubCategoryDefinition, ViewRadius, WorldLoadProgress,
@@ -190,6 +191,10 @@ pub const GROUND_BLOCK_ID: i32 = 1;
 /// Cap on chunk columns streamed per axis, whatever the client asks for.
 pub const MAX_CHUNK_RADIUS: i32 = 32;
 
+/// The player's spawn position, shared by the entity spawn update
+/// and the world-join ClientTeleport.
+const SPAWN_POSITION: [f64; 3] = [8.0, 66.0, 8.0];
+
 #[derive(Default, PartialEq, Clone, Copy, Debug)]
 pub enum Phase {
     #[default]
@@ -231,6 +236,7 @@ pub struct Session {
     view_radius_blocks: Option<i32>,
     sent_assets: bool,
     chunks_sent: bool,
+    teleport_sent: bool,
     auth: Option<Arc<SessionAuthCtx>>,
     /// The world identity sent in JoinWorld. Random per session: the
     /// client keys persisted per-world state (map/exploration caches)
@@ -259,6 +265,7 @@ impl Default for Session {
             view_radius_blocks: None,
             sent_assets: false,
             chunks_sent: false,
+            teleport_sent: false,
             auth: None,
             world_uuid: fresh_world_uuid(),
         }
@@ -654,7 +661,7 @@ impl Session {
                 rustale_protocol::entities::player_spawn_update(
                     1,
                     self.username.as_deref().unwrap_or(""),
-                    [8.0, 66.0, 8.0],
+                    SPAWN_POSITION,
                 ),
             ),
         ));
@@ -741,9 +748,29 @@ impl Session {
             "[server] ClientReady: chunks={} gameplay={}",
             ready.ready_for_chunks, ready.ready_for_gameplay
         );
-        if self.phase == Phase::AwaitClientReady {
+        if self.phase == Phase::AwaitClientReady && ready.ready_for_chunks {
             self.phase = Phase::InWorld;
             self.finish_joining(out);
+        }
+        // The gameplay-ready ClientReady is answered with the
+        // world-join teleport (GamePacketHandler.handle(ClientReady)
+        // -> TeleportSystems.queueAndSendClientTeleport): the client
+        // waits for it before entering the world and acknowledges it
+        // in its movement packets. First teleport id is 0.
+        if ready.ready_for_gameplay && !self.teleport_sent {
+            self.teleport_sent = true;
+            out.packets.push((
+                ids::CLIENT_TELEPORT,
+                ClientTeleport {
+                    teleport_id: 0,
+                    position: SPAWN_POSITION,
+                    body_orientation: [0.0; 3],
+                    look_orientation: [0.0; 3],
+                    reset_velocity: true,
+                }
+                .serialize(),
+            ));
+            println!("[server] sent world-join ClientTeleport (id 0)");
         }
     }
 
@@ -889,7 +916,15 @@ mod tests {
         assert_eq!(out.chunk_packets[2].0, ids::SET_CHUNK);
         assert_eq!(out.chunk_packets[3].0, ids::SET_CHUNK_ENVIRONMENTS);
 
-        // A second ClientReady sends nothing more.
+        // The gameplay-ready ClientReady is answered with the
+        // world-join ClientTeleport (55-byte fixed payload)...
+        let out = s.handle(ids::CLIENT_READY, &[0b11]);
+        assert_eq!(out.packets.len(), 1);
+        assert_eq!(out.packets[0].0, ids::CLIENT_TELEPORT);
+        assert_eq!(out.packets[0].1.len(), 55);
+        assert!(out.chunk_packets.is_empty());
+
+        // ...and a third ClientReady sends nothing more.
         let out = s.handle(ids::CLIENT_READY, &[0b11]);
         assert!(out.packets.is_empty());
         assert!(out.chunk_packets.is_empty());

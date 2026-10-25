@@ -40,6 +40,7 @@ pub mod ids {
     pub const SETUP_FINALIZE: i32 = 33;
     pub const SET_CLIENT_ID: i32 = 100;
     pub const JOIN_WORLD: i32 = 104;
+    pub const CLIENT_TELEPORT: i32 = 109;
     pub const CLIENT_READY: i32 = 105;
     pub const SET_CHUNK: i32 = 131;
     pub const SET_CHUNK_HEIGHTMAP: i32 = 132;
@@ -93,6 +94,46 @@ pub fn decode_packet_payload(packet_id: i32, raw: &[u8]) -> Result<Vec<u8>> {
             .map_err(|_| ProtoError::DecompressionFailed)
     } else {
         Ok(raw.to_vec())
+    }
+}
+
+/// Packet 109, server -> client: teleport the client to a transform,
+/// acknowledged by the client in its movement packets. The reference
+/// sends it for the world join when the client reports
+/// readyForGameplay (TeleportSystems.queueAndSendClientTeleport,
+/// first teleport id 0, resetVelocity true). Fixed 55 bytes, not
+/// compressed: teleport id, ignored-transform-fields mask (0 =
+/// nothing ignored), relative-transform-fields mask (0), then the
+/// ModelTransform (null bits 0x07 = all present; position 3 x f64 at
+/// 6, body orientation 3 x f32 at 30, look orientation 3 x f32 at
+/// 42), then resetVelocity at 54.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClientTeleport {
+    pub teleport_id: u8,
+    pub position: [f64; 3],
+    pub body_orientation: [f32; 3],
+    pub look_orientation: [f32; 3],
+    pub reset_velocity: bool,
+}
+
+impl ClientTeleport {
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.write_u8(self.teleport_id);
+        w.write_i16(0);
+        w.write_i16(0);
+        w.write_u8(0x07);
+        for v in self.position {
+            w.write_f64(v);
+        }
+        for v in self.body_orientation {
+            w.write_f32(v);
+        }
+        for v in self.look_orientation {
+            w.write_f32(v);
+        }
+        w.write_bool_bits(&[self.reset_velocity]);
+        w.buf
     }
 }
 
@@ -554,6 +595,26 @@ pub struct RequestInsecurePlayerOptions;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_teleport_layout() {
+        let payload = ClientTeleport {
+            teleport_id: 0,
+            position: [8.0, 66.0, 8.0],
+            body_orientation: [0.0; 3],
+            look_orientation: [0.0; 3],
+            reset_velocity: true,
+        }
+        .serialize();
+        assert_eq!(payload.len(), 55);
+        assert_eq!(payload[0], 0); // teleport id
+        assert_eq!(&payload[1..5], &[0, 0, 0, 0]); // ignored + relative masks
+        assert_eq!(payload[5], 0x07); // ModelTransform null bits: all present
+        assert_eq!(&payload[6..14], &8.0f64.to_le_bytes());
+        assert_eq!(&payload[14..22], &66.0f64.to_le_bytes());
+        assert_eq!(&payload[22..30], &8.0f64.to_le_bytes());
+        assert_eq!(payload[54], 1); // resetVelocity
+    }
 
     /// Byte-exact reference vector for a minimal Connect, computed from the
     /// generated reference serializer's layout (protocol build 258 values).

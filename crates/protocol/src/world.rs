@@ -456,6 +456,22 @@ mod tests {
     }
 
     #[test]
+    fn set_fluids_empty_bytes() {
+        let payload = SetFluids::empty(1, 2, 3).serialize();
+        assert_eq!(
+            payload,
+            vec![
+                0x01, // data present
+                1, 0, 0, 0, // x
+                2, 0, 0, 0, // y
+                3, 0, 0, 0, // z
+                0x02, // data length
+                0x00, 0x00, // Empty palette, no level data
+            ]
+        );
+    }
+
+    #[test]
     fn uniform_section_data_shape() {
         let data = uniform_section_data(1);
         assert_eq!(data.len(), 1 + 2 + 7 + SECTION_BLOCKS + 2);
@@ -515,6 +531,38 @@ impl SetColumn {
         }
         w.write_var_int(self.tintmap.len() as u32);
         w.buf.extend_from_slice(&self.tintmap);
+        w.buf
+    }
+}
+
+/// SetFluids (136, zstd, Chunks channel): the fluid section for one
+/// chunk section. Null-bits byte (bit 0 = data present), x/y/z i32,
+/// then the data inline (single variable field, variable block
+/// starts at the fixed size 13). The reference sends it for EVERY
+/// section alongside SetChunk; an untouched section's data is the
+/// Empty palette with no level data: [0x00, 0x00].
+pub struct SetFluids {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub data: Option<Vec<u8>>,
+}
+
+impl SetFluids {
+    pub fn empty(x: i32, y: i32, z: i32) -> Self {
+        SetFluids { x, y, z, data: Some(vec![0x00, 0x00]) }
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.write_u8(if self.data.is_some() { 0x01 } else { 0x00 });
+        w.write_i32(self.x);
+        w.write_i32(self.y);
+        w.write_i32(self.z);
+        if let Some(data) = &self.data {
+            w.write_var_int(data.len() as u32);
+            w.buf.extend_from_slice(data);
+        }
         w.buf
     }
 }

@@ -46,6 +46,7 @@ pub mod ids {
     pub const SET_CHUNK_HEIGHTMAP: i32 = 132;
     pub const SET_COLUMN: i32 = 138;
     pub const SET_CHUNK_ENVIRONMENTS: i32 = 134;
+    pub const SET_FLUIDS: i32 = 136;
     pub const CLEAR_CHUNKS: i32 = 139;
     pub const SET_ENTITY_SEED: i32 = 160;
     pub const ENTITY_UPDATES: i32 = 161;

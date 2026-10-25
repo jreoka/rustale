@@ -21,7 +21,7 @@ use rustale_protocol::setup::{
 };
 use rustale_protocol::world::{
     uniform_section_data, AddToServerPlayerList, ClientReady, JoinWorld, ServerPlayerListPlayer,
-    SetChunk, SetChunkEnvironments, SetColumn, SetClientId,
+    SetChunk, SetChunkEnvironments, SetColumn, SetClientId, SetFluids,
     VoiceConfig, UpdateWorldMapSettings,
     SetEntitySeed, SetTimeDilation, SetUpdateRate, UpdateFeatures, UpdatePostFxSettings,
     UpdateSunSettings, WorldGameplayConfig, HEIGHT_SECTIONS,
@@ -806,6 +806,13 @@ impl Session {
                     if let Ok(payload) = chunk.serialize() {
                         out.chunk_packets.push((ids::SET_CHUNK, payload));
                     }
+                    // The reference sends the fluid section for every
+                    // section too; without it the client never counts
+                    // the section as arrived.
+                    out.chunk_packets.push((
+                        ids::SET_FLUIDS,
+                        SetFluids::empty(cx, sy, cz).serialize(),
+                    ));
                     out.chunk_packets.push((
                         ids::SET_CHUNK_ENVIRONMENTS,
                         SetChunkEnvironments::uniform(cx, sy, cz, 0).serialize(),
@@ -891,7 +898,7 @@ mod tests {
 
         // ClientReady triggers the finish burst and the chunk stream
         // (radius was 12 chunks (384 blocks): 25 x 25 columns of
-        // SetColumn + 10 x (SetChunk + SetChunkEnvironments),
+        // SetColumn + 10 x (SetChunk + SetFluids + SetChunkEnvironments),
         // preceded by ViewRadius carrying the negotiated 384 blocks).
         let out = s.handle(ids::CLIENT_READY, &[0b01]);
         assert_eq!(s.phase(), Phase::InWorld);
@@ -909,12 +916,13 @@ mod tests {
                 ids::SET_UPDATE_RATE,
             ]
         );
-        assert_eq!(out.chunk_packets.len(), 25 * 25 * 21 + 1);
+        assert_eq!(out.chunk_packets.len(), 25 * 25 * 31 + 1);
         assert_eq!(out.chunk_packets[0].0, ids::VIEW_RADIUS);
         assert_eq!(out.chunk_packets[0].1, 384i32.to_le_bytes().to_vec());
         assert_eq!(out.chunk_packets[1].0, ids::SET_COLUMN);
         assert_eq!(out.chunk_packets[2].0, ids::SET_CHUNK);
-        assert_eq!(out.chunk_packets[3].0, ids::SET_CHUNK_ENVIRONMENTS);
+        assert_eq!(out.chunk_packets[3].0, ids::SET_FLUIDS);
+        assert_eq!(out.chunk_packets[4].0, ids::SET_CHUNK_ENVIRONMENTS);
 
         // The gameplay-ready ClientReady is answered with the
         // world-join ClientTeleport (55-byte fixed payload)...

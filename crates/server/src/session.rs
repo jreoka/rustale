@@ -195,6 +195,19 @@ pub const MAX_CHUNK_RADIUS: i32 = 32;
 /// and the world-join ClientTeleport.
 const SPAWN_POSITION: [f64; 3] = [8.0, 66.0, 8.0];
 
+/// Serialized ChunkLightData for a uniformly full-bright section:
+/// hasLight byte, root octree segment with mask 0 (no branches), and
+/// eight leaf values of 0xFFFF (R/G/B/sky channels all at max 0xF).
+fn full_bright_light() -> Vec<u8> {
+    let mut v = Vec::with_capacity(18);
+    v.push(1);
+    v.push(0);
+    for _ in 0..8 {
+        v.extend_from_slice(&0xFFFFu16.to_le_bytes());
+    }
+    v
+}
+
 #[derive(Default, PartialEq, Clone, Copy, Debug)]
 pub enum Phase {
     #[default]
@@ -791,23 +804,24 @@ impl Session {
                     SetColumn::uniform(cx, cz, GROUND_TOP_Y).serialize(),
                 ));
                 for sy in 0..HEIGHT_SECTIONS {
-                    // Local light data is present-but-empty ([0] = the
-                    // ChunkLightData hasLight flag clear). The reference
-                    // enables SEND_LOCAL_LIGHTING_DATA, and the client's
-                    // spawn-readiness count only credits columns whose
-                    // sections carry a light object.
+                    // Local light: a uniform full-bright ChunkLightData
+                    // octree (hasLight byte, root mask 0 = all eight
+                    // octants are leaves, each 0xFFFF = R/G/B/sky all at
+                    // the 0xF max). The client's spawn-readiness count
+                    // only credits columns whose sections carry light,
+                    // and a present-but-empty marker ([0]) does not count.
                     let chunk = if sy <= 1 {
                         SetChunk {
                             x: cx,
                             y: sy,
                             z: cz,
-                            local_light: Some(vec![0]),
+                            local_light: Some(full_bright_light()),
                             global_light: None,
                             data: Some(ground_data.clone()),
                         }
                     } else {
                         SetChunk {
-                            local_light: Some(vec![0]),
+                            local_light: Some(full_bright_light()),
                             ..SetChunk::air(cx, sy, cz)
                         }
                     };

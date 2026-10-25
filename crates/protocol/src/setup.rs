@@ -412,6 +412,31 @@ fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: boo
     fixed[7] = opacity;
     fixed[16..20].copy_from_slice(&1.0f32.to_le_bytes()); // ModelScale
     fixed[20..24].copy_from_slice(&1.0f32.to_le_bytes()); // ModelAnimationSpeed
+    if name == "Unknown" && std::env::var_os("RUSTALE_BLOCK_BYTES_ONE").is_some() {
+        // Diagnostic: the client's physics sweep gates block
+        // collision on a runtime byte that must equal 1, copied
+        // from an as-yet-unidentified packet byte field. Set every
+        // ambiguous byte/bool field to 1 to find whether the gate
+        // is one of them; bisect once the player lands.
+        fixed[24] = 1; // Looping
+        fixed[29] = 1; // BlockSupportsRequiredFor
+        fixed[30] = 1; // RequiresAlphaBlending
+        fixed[31] = 1; // CubeShadingMode
+        fixed[32] = 1; // RandomRotation
+        fixed[33] = 1; // VariantRotation
+        fixed[34] = 1; // RotationYawPlacementOffset
+        fixed[51] = 1; // ParticleColor
+        fixed[54] = 1; // TextureComputedColor
+        fixed[57] = 1; // Light
+        fixed[113] = 1; // MovementSettings.IsClimbable
+        fixed[126] = 1; // MovementSettings.IsBouncy
+        fixed[155] = 1; // MovementSettings.DisableAutoStep
+        fixed[156] = 3; // PlacementSettings.AllowRotationKey|PlaceInEmptyBlocks (bit-packed)
+        fixed[157] = 1; // PlacementSettings.PreviewVisibility
+        fixed[158] = 1; // PlacementSettings.RotationMode
+        fixed[171] = 1; // PlacementSettings.AllowBreakReplace
+        fixed[172] = 1; // IgnoreSupportWhenPlaced
+    }
     fixed[61..85].fill(0xFF); // Tint: six i32 at -1
     // BiomeTint at 85..109 stays zeroed (the config defaults are 0).
     fixed[173..177].copy_from_slice(&i32::MIN.to_le_bytes()); // TransitionToTag = TAG_NOT_FOUND

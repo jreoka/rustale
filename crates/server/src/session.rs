@@ -188,7 +188,7 @@ pub const GROUND_TOP_Y: i32 = 63;
 /// so visible ground waits on the BlockType transcription work.
 pub const GROUND_BLOCK_ID: i32 = 1;
 /// Cap on chunk columns streamed per axis, whatever the client asks for.
-pub const MAX_CHUNK_RADIUS: i32 = 12;
+pub const MAX_CHUNK_RADIUS: i32 = 32;
 
 #[derive(Default, PartialEq, Clone, Copy, Debug)]
 pub enum Phase {
@@ -681,7 +681,11 @@ impl Session {
     /// client id, time dilation, features, sun/post-fx, gameplay
     /// config, update rate — then the chunk stream.
     fn finish_joining(&mut self, out: &mut SessionOutcome) {
-        out.chunk_packets.push((ids::VIEW_RADIUS, ViewRadius { value: 32 * 32 }.serialize()));
+        // ViewRadius goes in blocks (chunks * ChunkUtil.SIZE), and it
+        // must be the negotiated radius: the client waits for chunks
+        // out to exactly this distance before finishing the join.
+        let view_radius = ViewRadius { value: self.view_radius_blocks.unwrap_or(512) };
+        out.chunk_packets.push((ids::VIEW_RADIUS, view_radius.serialize()));
         out.packets.push((ids::SET_ENTITY_SEED, SetEntitySeed { entity_seed: 0 }.serialize()));
         out.packets.push((ids::SET_CLIENT_ID, SetClientId { client_id: 1 }.serialize()));
         out.packets
@@ -753,8 +757,8 @@ impl Session {
             .clamp(1, MAX_CHUNK_RADIUS);
         let ground_data = uniform_section_data(GROUND_BLOCK_ID);
         let mut columns = 0;
-        for cx in -radius..radius {
-            for cz in -radius..radius {
+        for cx in -radius..=radius {
+            for cz in -radius..=radius {
                 out.chunk_packets.push((
                     ids::SET_COLUMN,
                     SetColumn::uniform(cx, cz, GROUND_TOP_Y).serialize(),
@@ -859,9 +863,9 @@ mod tests {
         assert_eq!(out.chunk_packets[0].0, ids::CLEAR_CHUNKS);
 
         // ClientReady triggers the finish burst and the chunk stream
-        // (radius was 12 chunks (384 blocks): (24)^2 columns of
+        // (radius was 12 chunks (384 blocks): 25 x 25 columns of
         // SetColumn + 10 x (SetChunk + SetChunkEnvironments),
-        // preceded by ViewRadius, a Chunks-channel packet).
+        // preceded by ViewRadius carrying the negotiated 384 blocks).
         let out = s.handle(ids::CLIENT_READY, &[0b01]);
         assert_eq!(s.phase(), Phase::InWorld);
         let burst: Vec<i32> = out.packets.iter().map(|(id, _)| *id).collect();
@@ -878,8 +882,9 @@ mod tests {
                 ids::SET_UPDATE_RATE,
             ]
         );
-        assert_eq!(out.chunk_packets.len(), 24 * 24 * 21 + 1);
+        assert_eq!(out.chunk_packets.len(), 25 * 25 * 21 + 1);
         assert_eq!(out.chunk_packets[0].0, ids::VIEW_RADIUS);
+        assert_eq!(out.chunk_packets[0].1, 384i32.to_le_bytes().to_vec());
         assert_eq!(out.chunk_packets[1].0, ids::SET_COLUMN);
         assert_eq!(out.chunk_packets[2].0, ids::SET_CHUNK);
         assert_eq!(out.chunk_packets[3].0, ids::SET_CHUNK_ENVIRONMENTS);

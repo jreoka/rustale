@@ -628,12 +628,16 @@ impl Session {
             self.username.as_deref().unwrap_or("?"),
             self.view_radius_chunks(),
         );
-        // addPlayer's own writes, in reference order: ClearChunks on
-        // the Chunks channel (clearWorld=true on the spawn path), then
-        // the PlayerConnect/module packets and the entity spawn, then
-        // JoinWorld. The onFinishPlayerJoining burst (ViewRadius,
-        // seed, client id, features, effects, gameplay config) waits
-        // for ClientReady — see on_client_ready.
+        // addPlayer's setup writes (onSetupPlayerJoining), in
+        // reference order: ClearChunks on the Chunks channel
+        // (clearWorld=true on the spawn path), then the
+        // PlayerConnect/module packets, then JoinWorld. The entity
+        // spawn is NOT sent here: the reference adds the player
+        // entity to the world in onFinishPlayerJoining, which runs
+        // after the client's ClientReady — an EntityUpdates sent
+        // before JoinWorld is discarded by the client's world
+        // transition, leaving no local player (and no valid join
+        // position) client-side. See finish_joining.
         out.chunk_packets.push((ids::CLEAR_CHUNKS, Vec::new()));
         // The world-map tracker pushes its settings when a player is
         // added; without them the client's map system has no scales.
@@ -665,19 +669,6 @@ impl Session {
                 .serialize(),
             ));
         }
-        // The player's own entity spawn precedes JoinWorld, as in the
-        // reference (addPlayer adds the entity — firing sendPlayerSelf —
-        // before JoinWorld is written). Network id matches SetClientId.
-        out.packets.push((
-            ids::ENTITY_UPDATES,
-            rustale_protocol::entities::entity_updates_packet(
-                rustale_protocol::entities::player_spawn_update(
-                    1,
-                    self.username.as_deref().unwrap_or(""),
-                    SPAWN_POSITION,
-                ),
-            ),
-        ));
         out.packets.push((
             ids::JOIN_WORLD,
             JoinWorld {
@@ -741,6 +732,21 @@ impl Session {
         ));
         out.packets
             .push((ids::SET_UPDATE_RATE, SetUpdateRate { updates_per_second: 20 }.serialize()));
+        // The player entity is added to the world only now (the
+        // reference's onFinishPlayerJoining): sendPlayerSelf's
+        // EntityUpdates, with the network id SetClientId announced.
+        // Sent ahead of the chunk stream so the client has its local
+        // player — and a valid position — while chunks arrive.
+        out.packets.push((
+            ids::ENTITY_UPDATES,
+            rustale_protocol::entities::entity_updates_packet(
+                rustale_protocol::entities::player_spawn_update(
+                    1,
+                    self.username.as_deref().unwrap_or(""),
+                    SPAWN_POSITION,
+                ),
+            ),
+        ));
         // Diagnostic toggle: RUSTALE_NO_CHUNKS=1 skips the chunk stream
         // entirely to isolate join processing from chunk content.
         if !self.chunks_sent && std::env::var_os("RUSTALE_NO_CHUNKS").is_none() {
@@ -921,7 +927,6 @@ mod tests {
                 ids::UPDATE_WORLD_MAP_SETTINGS,
                 ids::VOICE_CONFIG,
                 ids::ADD_TO_SERVER_PLAYER_LIST,
-                ids::ENTITY_UPDATES,
                 ids::JOIN_WORLD,
             ]
         );
@@ -948,6 +953,7 @@ mod tests {
                 ids::UPDATE_POST_FX_SETTINGS,
                 ids::WORLD_GAMEPLAY_CONFIG,
                 ids::SET_UPDATE_RATE,
+                ids::ENTITY_UPDATES,
             ]
         );
         assert_eq!(out.chunk_packets.len(), 25 * 25 * 31 + 1);

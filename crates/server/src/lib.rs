@@ -174,16 +174,16 @@ async fn apply_outcome(
     aux: &Arc<tokio::sync::Mutex<AuxStreams>>,
     outcome: &session::SessionOutcome,
 ) -> bool {
-    // Diagnostic: hold the join burst for RUSTALE_JOIN_DELAY_MS
-    // (default 2500) before writing it. The official server takes
-    // ~2s between setup and JoinWorld (world generation); ours was
-    // instant, and the client dies in its setup-complete continuation
-    // while its ~500ms entity-atlas prepare is still running.
+    // Optional pacing knob: hold the join burst for
+    // RUSTALE_JOIN_DELAY_MS before writing it (default off). It was a
+    // crash diagnostic — the client died in its setup-complete
+    // continuation, which turned out to be the empty ItemCategories
+    // tree, not a race — and is kept only for future bisection.
     if outcome.packets.iter().any(|(id, _)| *id == rustale_protocol::packets::ids::JOIN_WORLD) {
         let delay_ms: u64 = std::env::var("RUSTALE_JOIN_DELAY_MS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(2500);
+            .unwrap_or(0);
         if delay_ms > 0 {
             println!("[server] holding join burst for {delay_ms}ms");
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;

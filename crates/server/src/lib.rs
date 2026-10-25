@@ -17,7 +17,7 @@ use quinn::{Endpoint, VarInt};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 use auth::{Endpoints, JwtValidator, ServerAuth};
-use session::{AuthEffect, Session, SessionAuthCtx};
+use session::{AuthEffect, Phase, Session, SessionAuthCtx};
 
 /// QUIC application error codes from the protocol definitions.
 pub mod close_code {
@@ -233,8 +233,36 @@ async fn handle_stream(
 ) {
     let mut decoder = FrameDecoder::new();
     let mut buf = vec![0u8; 64 * 1024];
+    // The reference world's NetworkTickSystem writes a NetworkTick (5)
+    // to every in-world player each tick (tickDurationMicros u32,
+    // serverTick u32). The client's world only advances — processing
+    // received chunks and entities — on these ticks; without them it
+    // sits on the loading screen forever.
+    let mut tick_interval = tokio::time::interval(std::time::Duration::from_millis(33));
+    tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut server_tick: u32 = 0;
     loop {
-        match recv.read(&mut buf).await {
+        let read_result = tokio::select! {
+            _ = tick_interval.tick() => {
+                if session.lock().await.phase() == Phase::InWorld {
+                    server_tick += 1;
+                    let mut payload = Vec::with_capacity(8);
+                    payload.extend_from_slice(&33_333u32.to_le_bytes());
+                    payload.extend_from_slice(&server_tick.to_le_bytes());
+                    let frame = encode_packet_frame(
+                        rustale_protocol::packets::ids::NETWORK_TICK,
+                        &payload,
+                    );
+                    if let Err(e) = send.write_all(&frame).await {
+                        eprintln!("[server] tick write failed: {e}");
+                        return;
+                    }
+                }
+                continue;
+            }
+            read = recv.read(&mut buf) => read,
+        };
+        match read_result {
             Ok(Some(n)) => {
                 decoder.feed(&buf[..n]);
                 loop {

@@ -609,9 +609,45 @@ pub fn empty_registry_init_packets() -> Vec<(i32, Vec<u8>)> {
         .collect()
 }
 
+/// UpdateTranslations (64) Init with a full message catalog, as the
+/// reference's I18nModule sends right after the registry: null-bits
+/// byte (bit 0 = dict present), Type byte 0 (Init), then the single
+/// variable field inline — varint count, then per entry a varint
+/// byte-length + UTF-8 key and value. Duplicate keys are a protocol
+/// error on the client reader; callers pass a deduplicated catalog.
+pub fn update_translations_init(entries: &[(String, String)]) -> Vec<u8> {
+    let mut w = Writer::new();
+    w.write_u8(0x01);
+    w.write_u8(0);
+    w.write_var_int(entries.len() as u32);
+    for (key, value) in entries {
+        w.write_string(key, 4096000).expect("translation key within limits");
+        w.write_string(value, 4096000).expect("translation value within limits");
+    }
+    w.buf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_translations_init_bytes() {
+        let entries = vec![
+            ("a.b".to_string(), "X".to_string()),
+            ("c".to_string(), "YZ".to_string()),
+        ];
+        let payload = update_translations_init(&entries);
+        assert_eq!(
+            payload,
+            vec![
+                0x01, 0x00, // dict present, Type = Init
+                0x02, // two entries
+                0x03, b'a', b'.', b'b', 0x01, b'X', // "a.b" -> "X"
+                0x01, b'c', 0x02, b'Y', b'Z', // "c" -> "YZ"
+            ]
+        );
+    }
 
     #[test]
     fn connect_accept_no_password() {

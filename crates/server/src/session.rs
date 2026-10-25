@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use rustale_protocol::packets::ids;
 use rustale_protocol::setup::{
-    empty_registry_init_packets, ConnectAccept, RequestAssets, ServerInfo, ViewRadius,
-    WorldLoadProgress, WorldSettings,
+    empty_registry_init_packets, update_translations_init, ConnectAccept, RequestAssets, ServerInfo,
+    ViewRadius, WorldLoadProgress, WorldSettings,
 };
 use rustale_protocol::world::{
     uniform_section_data, AddToServerPlayerList, ClientReady, JoinWorld, ServerPlayerListPlayer,
@@ -46,6 +46,26 @@ fn required_assets() -> &'static [Asset] {
                 } else {
                     None
                 }
+            })
+            .collect()
+    })
+}
+
+/// The stock pack's en-US translation catalog, extracted from the
+/// client's own install. The reference's I18nModule sends it in full
+/// as the UpdateTranslations Init right after the registry burst; a
+/// session in any other language falls back to it, matching
+/// I18nModule.resolveLanguage's default.
+fn translation_entries() -> &'static [(String, String)] {
+    static ENTRIES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        let json = include_str!("../assets/translations_en-US.json");
+        let map: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(json).expect("embedded translations_en-US.json parses");
+        map.into_iter()
+            .map(|(k, v)| {
+                let value = v.as_str().expect("translation values are strings").to_string();
+                (k, value)
             })
             .collect()
     })
@@ -466,7 +486,14 @@ impl Session {
         }
         // Then the registry Init packets and the world-load pair.
         self.sent_assets = true;
-        out.packets.extend(empty_registry_init_packets());
+        let mut burst = empty_registry_init_packets();
+        // I18nModule.sendTranslations fires in this slot in the
+        // reference: replace the generic empty-dict payload for
+        // UpdateTranslations with the full catalog Init.
+        if let Some(slot) = burst.iter_mut().find(|(id, _)| *id == ids::UPDATE_TRANSLATIONS) {
+            slot.1 = update_translations_init(translation_entries());
+        }
+        out.packets.extend(burst);
         let progress = WorldLoadProgress {
             status: Some(FormattedMessage::translation("client.general.worldLoad.loadingWorld")),
             percent_complete: 0,

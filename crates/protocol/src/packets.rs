@@ -43,6 +43,7 @@ pub mod ids {
     pub const CLIENT_TELEPORT: i32 = 109;
     pub const CLIENT_READY: i32 = 105;
     pub const CLIENT_MOVEMENT: i32 = 108;
+    pub const UPDATE_MOVEMENT_SETTINGS: i32 = 110;
     pub const SET_CHUNK: i32 = 131;
     pub const SET_CHUNK_HEIGHTMAP: i32 = 132;
     pub const SET_COLUMN: i32 = 138;
@@ -100,7 +101,94 @@ pub fn decode_packet_payload(packet_id: i32, raw: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
-/// Packet 109, server -> client: teleport the client to a transform,
+/// Packet 110, server -> client: the player's movement settings —
+/// a single fixed 259-byte MovementSettings structure (offsets from
+/// the generated accessors). The reference sends it when a player is
+/// added (MovementManager.update): MovementConfig.toPacket() with
+/// mass/drag/invertedGravity overwritten from the entity's physics
+/// values. Without it the client's movement controller has only
+/// zeros: the player can look around but cannot walk or jump.
+///
+/// Values are the MovementConfig class's own default instance
+/// (which the stock asset mirrors), with mass 1.0 / drag 0.01 /
+/// normal gravity for the physics-derived fields and FlyMode
+/// Disabled (adventure).
+pub fn update_movement_settings_packet() -> Vec<u8> {
+    // (offset, value) for every f32 field, in generated-accessor order.
+    const FLOATS: &[(usize, f32)] = &[
+        (0, 1.0),      // Mass (physics-derived)
+        (4, 0.01),     // DragCoefficient (physics-derived)
+        (9, 0.242),    // VelocityResistance
+        (13, 11.8),    // JumpForce
+        (17, 10.0),    // SwimJumpForce
+        (21, 0.3),     // JumpBufferDuration
+        (25, 3.0),     // JumpBufferMaxYVelocity
+        (29, 0.1),     // Acceleration
+        (33, 0.96),    // AirDragMin
+        (37, 0.995),   // AirDragMax
+        (41, 6.0),     // AirDragMinSpeed
+        (45, 10.0),    // AirDragMaxSpeed
+        (49, 0.02),    // AirFrictionMin
+        (53, 0.045),   // AirFrictionMax
+        (57, 6.0),     // AirFrictionMinSpeed
+        (61, 10.0),    // AirFrictionMaxSpeed
+        (65, 1.0),     // AirSpeedMultiplier
+        (69, 0.0),     // AirControlMinSpeed
+        (73, 3.0),     // AirControlMaxSpeed
+        (77, 0.0),     // AirControlMinMultiplier
+        (81, 3.13),    // AirControlMaxMultiplier
+        (85, 1.05),    // ComboAirSpeedMultiplier
+        (89, 5.5),     // BaseSpeed
+        (93, 0.035),   // ClimbSpeed
+        (97, 0.035),   // ClimbSpeedLateral
+        (101, 0.5),    // ClimbUpSprintSpeed
+        (105, 0.6),    // ClimbDownSprintSpeed
+        (109, 10.32),  // HorizontalFlySpeed
+        (113, 10.32),  // VerticalFlySpeed
+        (117, 1000.0), // MaxSpeedMultiplier
+        (121, 0.01),   // MinSpeedMultiplier
+        (125, 0.5),    // WishDirectionGravityX
+        (129, 0.5),    // WishDirectionGravityY
+        (133, 0.5),    // WishDirectionWeightX
+        (137, 0.5),    // WishDirectionWeightY
+        (142, 0.04),   // CollisionExpulsionForce
+        (146, 0.3),    // ForwardWalkSpeedMultiplier
+        (150, 0.3),    // BackwardWalkSpeedMultiplier
+        (154, 0.3),    // StrafeWalkSpeedMultiplier
+        (158, 1.0),    // ForwardRunSpeedMultiplier
+        (162, 0.65),   // BackwardRunSpeedMultiplier
+        (166, 0.8),    // StrafeRunSpeedMultiplier
+        (170, 0.55),   // ForwardCrouchSpeedMultiplier
+        (174, 0.4),    // BackwardCrouchSpeedMultiplier
+        (178, 0.45),   // StrafeCrouchSpeedMultiplier
+        (182, 1.65),   // ForwardSprintSpeedMultiplier
+        (186, 35.0),   // VariableJumpFallForce
+        (190, 0.6),    // FallEffectDuration
+        (194, 7.0),    // FallJumpForce
+        (198, 0.1),    // FallMomentumLoss
+        (202, 0.95),   // AutoJumpObstacleSpeedLoss
+        (206, 0.75),   // AutoJumpObstacleSprintSpeedLoss
+        (210, 0.2),    // AutoJumpObstacleEffectDuration
+        (214, 0.1),    // AutoJumpObstacleSprintEffectDuration
+        (218, 45.0),   // AutoJumpObstacleMaxAngle
+        (223, 8.5),    // MinSlideEntrySpeed
+        (227, 2.5),    // SlideExitSpeed
+        (231, 21.0),   // MinFallSpeedToEngageRoll
+        (235, 31.0),   // MaxFallSpeedToEngageRoll
+        (239, 2.5),    // RollStartSpeedModifier
+        (243, 1.5),    // RollExitSpeedModifier
+        (247, 0.9),    // RollTimeToComplete
+        (251, 30.0),   // MaxSlopeAngleDegrees
+        (255, 15.0),   // MaxWallAngleDegrees
+    ];
+    let mut b = [0u8; 259];
+    for (off, v) in FLOATS {
+        b[*off..*off + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    // InvertedGravity @8 = false; Fly @141 = Disabled (adventure).
+    b[222] = 1; // AutoJumpDisableJumping = true
+    b.to_vec()
+}
 /// acknowledged by the client in its movement packets. The reference
 /// sends it for the world join when the client reports
 /// readyForGameplay (TeleportSystems.queueAndSendClientTeleport,
@@ -598,6 +686,19 @@ pub struct RequestInsecurePlayerOptions;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn movement_settings_layout_is_pinned() {
+        let p = update_movement_settings_packet();
+        assert_eq!(p.len(), 259);
+        let f = |o: usize| f32::from_le_bytes(p[o..o + 4].try_into().unwrap());
+        assert_eq!(f(13), 11.8); // JumpForce
+        assert_eq!(f(89), 5.5); // BaseSpeed
+        assert_eq!(f(182), 1.65); // ForwardSprintSpeedMultiplier
+        assert_eq!(p[141], 0); // Fly = Disabled
+        assert_eq!(p[222], 1); // AutoJumpDisableJumping
+        assert_eq!(f(255), 15.0); // MaxWallAngleDegrees
+    }
 
     #[test]
     fn client_teleport_layout() {

@@ -797,10 +797,17 @@ impl Session {
         out.packets
             .push((ids::SET_UPDATE_RATE, SetUpdateRate { updates_per_second: 20 }.serialize()));
         // The player entity is added to the world only now (the
-        // reference's onFinishPlayerJoining): sendPlayerSelf's
+        // reference's onFinishPlayerJoining): first the movement
+        // settings (MovementManager.update — without them the
+        // client's movement controller has zero speeds and the
+        // player can only look around), then sendPlayerSelf's
         // EntityUpdates, with the network id SetClientId announced.
         // Sent ahead of the chunk stream so the client has its local
         // player — and a valid position — while chunks arrive.
+        out.packets.push((
+            ids::UPDATE_MOVEMENT_SETTINGS,
+            rustale_protocol::packets::update_movement_settings_packet(),
+        ));
         out.packets.push((
             ids::ENTITY_UPDATES,
             rustale_protocol::entities::entity_updates_packet(
@@ -1016,6 +1023,7 @@ mod tests {
                 ids::UPDATE_POST_FX_SETTINGS,
                 ids::WORLD_GAMEPLAY_CONFIG,
                 ids::SET_UPDATE_RATE,
+                ids::UPDATE_MOVEMENT_SETTINGS,
                 ids::ENTITY_UPDATES,
             ]
         );

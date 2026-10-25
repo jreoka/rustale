@@ -21,7 +21,7 @@ use rustale_protocol::setup::{
 };
 use rustale_protocol::world::{
     uniform_section_data, AddToServerPlayerList, ClientReady, JoinWorld, ServerPlayerListPlayer,
-    SetAbsentChunks, SetChunk, SetChunkEnvironments, SetColumn, SetClientId, SetFluids,
+    SetChunk, SetChunkEnvironments, SetColumn, SetClientId, SetFluids,
     VoiceConfig, UpdateWorldMapSettings,
     SetEntitySeed, SetTimeDilation, SetUpdateRate, UpdateFeatures, UpdatePostFxSettings,
     UpdateSunSettings, WorldGameplayConfig, HEIGHT_SECTIONS,
@@ -788,8 +788,8 @@ impl Session {
     }
 
     /// Queue the flat test world on the Chunks stream: for every column in
-    /// radius around spawn, a heightmap, the two solid ground sections,
-    /// and a SetAbsentChunks for the eight sections above them.
+    /// radius around spawn, a heightmap and all 10 sections with data
+    /// (two solid ground sections, the rest uniform air).
     fn stream_flat_world(&self, out: &mut SessionOutcome) {
         let radius = self
             .view_radius_chunks()
@@ -803,14 +803,14 @@ impl Session {
                     ids::SET_COLUMN,
                     SetColumn::uniform(cx, cz, GROUND_TOP_Y).serialize(),
                 ));
-                // Only the two ground sections carry data. The sections
-                // above them back no data at all: the reference reports
-                // those per column with one batched SetAbsentChunks so
-                // the client treats the cells as definitively air. A
-                // SetChunk with null data instead leaves the client's
-                // section pending forever, and its spawn-readiness count
-                // (every section around the spawn must resolve) stalls.
-                for sy in 0..=1 {
+                // Every section carries data: the two ground sections
+                // are solid block 1, the sections above them are a
+                // uniform air palette (block 0) WITH data rather than
+                // null. (A null-data SetChunk leaves the client's
+                // section storage uninitialized, and absent-marking
+                // those sections did not resolve them either.)
+                let air_data = uniform_section_data(0);
+                for sy in 0..HEIGHT_SECTIONS {
                     // Local light: a uniform full-bright ChunkLightData
                     // octree (hasLight byte, root mask 0 = all eight
                     // octants are leaves, each 0xFFFF = R/G/B/sky all at
@@ -821,7 +821,11 @@ impl Session {
                         z: cz,
                         local_light: Some(full_bright_light()),
                         global_light: None,
-                        data: Some(ground_data.clone()),
+                        data: Some(if sy <= 1 {
+                            ground_data.clone()
+                        } else {
+                            air_data.clone()
+                        }),
                     };
                     if let Ok(payload) = chunk.serialize() {
                         out.chunk_packets.push((ids::SET_CHUNK, payload));
@@ -835,15 +839,6 @@ impl Session {
                         SetChunkEnvironments::uniform(cx, sy, cz, 0).serialize(),
                     ));
                 }
-                out.chunk_packets.push((
-                    ids::SET_ABSENT_CHUNKS,
-                    SetAbsentChunks {
-                        x: cx,
-                        z: cz,
-                        ys: (2..HEIGHT_SECTIONS).collect(),
-                    }
-                    .serialize(),
-                ));
                 columns += 1;
             }
         }
@@ -942,7 +937,7 @@ mod tests {
                 ids::SET_UPDATE_RATE,
             ]
         );
-        assert_eq!(out.chunk_packets.len(), 25 * 25 * 8 + 1);
+        assert_eq!(out.chunk_packets.len(), 25 * 25 * 31 + 1);
         assert_eq!(out.chunk_packets[0].0, ids::VIEW_RADIUS);
         assert_eq!(out.chunk_packets[0].1, 384i32.to_le_bytes().to_vec());
         assert_eq!(out.chunk_packets[1].0, ids::SET_COLUMN);

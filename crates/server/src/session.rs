@@ -246,6 +246,12 @@ pub struct Session {
     phase: Phase,
     username: Option<String>,
     uuid: Option<[u8; 16]>,
+    /// The player's skin as a serialized PlayerSkin structure,
+    /// echoed back in the spawn's PlayerSkinUpdate (the reference
+    /// keeps the skin from the account/dev-client options on the
+    /// player and sendPlayerSelf sends it; a null skin leaves the
+    /// client without a character model).
+    skin: Option<Vec<u8>>,
     view_radius_blocks: Option<i32>,
     sent_assets: bool,
     chunks_sent: bool,
@@ -256,6 +262,24 @@ pub struct Session {
     /// by it, and a fixed value would reuse whatever an earlier,
     /// broken run left behind.
     world_uuid: [u8; 16],
+}
+
+/// Convert the account skin JSON (from the identity token's profile
+/// claim) into a serialized PlayerSkin structure. The JSON object's
+/// keys are the protocol field names; unknown shapes log their keys
+/// once and yield None (the spawn then carries a null skin, as
+/// before).
+fn skin_bytes_from_json(json: &str) -> Option<Vec<u8>> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let obj = value.as_object()?;
+    let fields: [Option<&str>; 20] = rustale_protocol::entities::PLAYER_SKIN_FIELDS
+        .map(|name| obj.get(name).and_then(|v| v.as_str()));
+    if fields.iter().all(|f| f.is_none()) {
+        let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        println!("[server] skin JSON matched no PlayerSkin fields; keys: {keys:?}");
+        return None;
+    }
+    Some(rustale_protocol::entities::serialize_player_skin(&fields))
 }
 
 /// A fresh v4-layout UUID from the auth module's generator.
@@ -275,6 +299,7 @@ impl Default for Session {
             phase: Phase::default(),
             username: None,
             uuid: None,
+            skin: None,
             view_radius_blocks: None,
             sent_assets: false,
             chunks_sent: false,
@@ -414,6 +439,7 @@ impl Session {
                 );
                 self.username = Some(claims.username);
                 self.uuid = crate::auth::parse_uuid_str(&claims.uuid);
+                self.skin = claims.skin.as_deref().and_then(skin_bytes_from_json);
                 self.phase = Phase::AwaitAuthGrant;
                 out.effect = Some(AuthEffect::RequestGrant { identity_token: token });
             }
@@ -556,6 +582,7 @@ impl Session {
                 );
                 self.username = Some(opts.username);
                 self.uuid = Some(opts.uuid);
+                self.skin = opts.skin_raw;
 
                 // No server password -> no challenge; fall straight into
                 // setup: ConnectAccept, then WorldSettings + ServerInfo.
@@ -744,6 +771,7 @@ impl Session {
                     1,
                     self.username.as_deref().unwrap_or(""),
                     SPAWN_POSITION,
+                    self.skin.as_deref(),
                 ),
             ),
         ));

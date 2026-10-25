@@ -26,11 +26,70 @@ fn component(out: &mut Vec<u8>, type_id: u32, body: &[u8]) {
     out.extend_from_slice(body);
 }
 
+/// PlayerSkin field names in serialization order (the generated
+/// structure: 20 nullable ASCII strings, max 96 bytes each).
+pub const PLAYER_SKIN_FIELDS: [&str; 20] = [
+    "bodyCharacteristic",
+    "underwear",
+    "face",
+    "eyes",
+    "ears",
+    "mouth",
+    "facialHair",
+    "haircut",
+    "eyebrows",
+    "pants",
+    "overpants",
+    "undertop",
+    "overtop",
+    "shoes",
+    "headAccessory",
+    "faceAccessory",
+    "earAccessory",
+    "skinFeature",
+    "gloves",
+    "cape",
+];
+
+/// Serialize a PlayerSkin structure: 3 null-bit bytes (field i ->
+/// bit i, in declaration order), 20 offset slots, variable block at
+/// 83. Absent fields get a -1 slot.
+pub fn serialize_player_skin(fields: &[Option<&str>; 20]) -> Vec<u8> {
+    let mut w = Writer::new();
+    let mut bits = [0u8; 3];
+    for (i, f) in fields.iter().enumerate() {
+        if f.is_some() {
+            bits[i / 8] |= 1 << (i % 8);
+        }
+    }
+    w.buf.extend_from_slice(&bits);
+    let slots: Vec<usize> = (0..20).map(|_| w.reserve_offset()).collect();
+    let var_start = w.position();
+    debug_assert_eq!(var_start, 83);
+    for (i, f) in fields.iter().enumerate() {
+        match f {
+            Some(s) => {
+                w.write_offset_at(slots[i], (w.position() - var_start) as i32);
+                let _ = w.write_ascii_string(s, 96);
+            }
+            None => w.write_offset_at(slots[i], -1),
+        }
+    }
+    w.buf
+}
+
 /// The local player's own spawn update, mirroring the reference's
-/// sendPlayerSelf for a standard player: nameplate, (null) model and
-/// skin for now, empty equipment/effects/stats, transform at spawn,
-/// standing movement states.
-pub fn player_spawn_update(network_id: i32, username: &str, position: [f64; 3]) -> Vec<u8> {
+/// sendPlayerSelf for a standard player: nameplate, (null) model for
+/// now, the player's own skin when known, empty equipment/effects/
+/// stats, transform at spawn, standing movement states. `skin` is a
+/// serialized PlayerSkin structure (see serialize_player_skin, or
+/// the raw bytes a dev client sent in InsecurePlayerOptions).
+pub fn player_spawn_update(
+    network_id: i32,
+    username: &str,
+    position: [f64; 3],
+    skin: Option<&[u8]>,
+) -> Vec<u8> {
     let mut updates: Vec<u8> = Vec::new();
     let mut count: u32 = 0;
 
@@ -57,8 +116,18 @@ pub fn player_spawn_update(network_id: i32, username: &str, position: [f64; 3]) 
         count += 1;
     }
 
-    // PlayerSkinUpdate: null bits only, Skin null.
-    component(&mut updates, ct::PLAYER_SKIN, &[0]);
+    // PlayerSkinUpdate: null bits + the skin structure inline (its
+    // single variable field). The reference echoes the player's real
+    // skin from their account; a null skin leaves the client without
+    // a character model to build.
+    match skin {
+        Some(bytes) => {
+            let mut body = vec![0x01u8];
+            body.extend_from_slice(bytes);
+            component(&mut updates, ct::PLAYER_SKIN, &body);
+        }
+        None => component(&mut updates, ct::PLAYER_SKIN, &[0]),
+    }
     count += 1;
 
     // EquipmentUpdate: null bits + three -1 slots (ArmorIds, hands).
@@ -133,12 +202,29 @@ mod tests {
 
     #[test]
     fn player_spawn_packet_has_pinned_layout() {
-        let update = player_spawn_update(1, "jreoka", [8.0, 66.0, 8.0]);
+        let update = player_spawn_update(1, "jreoka", [8.0, 66.0, 8.0], None);
         // 13-byte EntityUpdate header + count + 91 bytes of components
         // for a 6-char name (see module docs / sendPlayerSelf order).
         assert_eq!(update.len(), 13 + 1 + 91);
         let packet = entity_updates_packet(update);
         assert_eq!(packet.len(), 9 + 1 + 105);
         assert_eq!(packet[0], 0x02);
+    }
+
+    #[test]
+    fn player_skin_layout_matches_generated_structure() {
+        // Fields 0 (bodyCharacteristic) and 19 (cape) set: null bits
+        // byte0=0x01, byte2=0x08; slot 0 = 0, slots 1..18 = -1,
+        // slot 19 = 3 (varint 2 + "AB"); variable block at 83.
+        let mut fields: [Option<&str>; 20] = [None; 20];
+        fields[0] = Some("AB");
+        fields[19] = Some("C");
+        let skin = serialize_player_skin(&fields);
+        assert_eq!(skin.len(), 83 + 3 + 2);
+        assert_eq!(&skin[0..3], &[0x01, 0x00, 0x08]);
+        assert_eq!(&skin[3..7], &0i32.to_le_bytes());
+        assert_eq!(&skin[7..11], &(-1i32).to_le_bytes());
+        assert_eq!(&skin[79..83], &3i32.to_le_bytes());
+        assert_eq!(&skin[83..], &[2, b'A', b'B', 1, b'C']);
     }
 }

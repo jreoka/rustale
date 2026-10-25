@@ -400,6 +400,12 @@ fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: boo
     let mut fixed = [0u8; 177];
     fixed[0] = 0x98; // null bits: Name | Tint | BiomeTint present
     fixed[1] = 0x45 | if support { 0x10 } else { 0 }; // ShaderEffect | ModelTexture | CubeTextures (| Support)
+    // Interactions is ALWAYS present in a real packet: toPacket()
+    // sets it unconditionally (an empty map when the block has
+    // none). The client's movement controller dereferences the
+    // block-at-feet's interactions map — a null map is a client
+    // NullReferenceException as soon as the player moves.
+    fixed[3] = 0x04; // null bits: Interactions present
     fixed[4] = unknown as u8;
     fixed[5] = draw_type;
     fixed[6] = material;
@@ -412,11 +418,11 @@ fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: boo
     let mut w = Writer::new();
     w.buf.extend_from_slice(&fixed);
     // Slots in variable-field order: Name 1, ShaderEffect 2,
-    // ModelTexture 4, Support 6, CubeTextures 8.
+    // ModelTexture 4, Support 6, CubeTextures 8, Interactions 20.
     let slots: Vec<usize> = (0..25).map(|_| w.reserve_offset()).collect();
     let var_start = w.position();
     debug_assert_eq!(var_start, 277);
-    let present = [1usize, 2, 4, 8];
+    let present = [1usize, 2, 4, 8, 20];
     for (i, slot) in slots.iter().enumerate() {
         if !present.contains(&i) && !(support && i == 6) {
             w.write_offset_at(*slot, -1);
@@ -437,6 +443,8 @@ fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: boo
     w.write_offset_at(slots[8], (w.position() - var_start) as i32);
     w.write_var_int(1); // CubeTextures = [Unknown]
     w.buf.extend_from_slice(&block_textures("BlockTextures/Unknown.png"));
+    w.write_offset_at(slots[20], (w.position() - var_start) as i32);
+    w.write_var_int(0); // Interactions = empty map (never null)
     w.buf
 }
 
@@ -879,13 +887,13 @@ mod tests {
         assert_eq!(payload[12], 0x98);
         assert_eq!(payload[12 + 5], 0); // DrawType Empty
         assert_eq!(&payload[12 + 61..12 + 65], &[0xFF; 4]); // Tint top = -1
-        // Entry 0 is 504 bytes, so entry 1's key sits at 12 + 504 = 516:
+        // Entry 0 is 505 bytes, so entry 1's key sits at 12 + 505 = 517:
         // the canonical Unknown block (unknown flag set, solid cube).
-        assert_eq!(&payload[516..520], &1i32.to_le_bytes());
-        assert_eq!(payload[520 + 4], 1); // Unknown flag
-        assert_eq!(payload[520 + 5], 2); // DrawType Cube
-        assert_eq!(payload[520 + 6], 1); // Material Solid
-        assert_eq!(payload.len(), 516 + 4 + 505);
+        assert_eq!(&payload[517..521], &1i32.to_le_bytes());
+        assert_eq!(payload[521 + 4], 1); // Unknown flag
+        assert_eq!(payload[521 + 5], 2); // DrawType Cube
+        assert_eq!(payload[521 + 6], 1); // Material Solid
+        assert_eq!(payload.len(), 517 + 4 + 506);
     }
 
     #[test]

@@ -155,13 +155,15 @@ async fn handle_connection(conn: quinn::Connection, runtime: Option<Arc<AuthRunt
         None => Arc::new(tokio::sync::Mutex::new(Session::new())),
     };
     let aux = Arc::new(tokio::sync::Mutex::new(AuxStreams::default()));
+    let primary_claimed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     while let Ok((send, recv)) = conn.accept_bi().await {
         let session = session.clone();
         let aux = aux.clone();
         let conn = conn.clone();
         let runtime = runtime.clone();
+        let primary_claimed = primary_claimed.clone();
         tokio::spawn(async move {
-            handle_stream(conn, send, recv, session, aux, runtime).await;
+            handle_stream(conn, send, recv, session, aux, runtime, primary_claimed).await;
         });
     }
 }
@@ -230,7 +232,12 @@ async fn handle_stream(
     session: Arc<tokio::sync::Mutex<Session>>,
     aux: Arc<tokio::sync::Mutex<AuxStreams>>,
     runtime: Option<Arc<AuthRuntime>>,
+    primary_claimed: Arc<std::sync::atomic::AtomicBool>,
 ) {
+    // Only the first (Default) stream carries the session and the tick
+    // loop; other streams (e.g. the client's Voice stream) run their
+    // own protocols and must not get session traffic interleaved.
+    let is_primary = !primary_claimed.swap(true, std::sync::atomic::Ordering::SeqCst);
     let mut decoder = FrameDecoder::new();
     let mut buf = vec![0u8; 64 * 1024];
     // The reference world's NetworkTickSystem writes a NetworkTick (5)
@@ -244,7 +251,7 @@ async fn handle_stream(
     loop {
         let read_result = tokio::select! {
             _ = tick_interval.tick() => {
-                if session.lock().await.phase() == Phase::InWorld {
+                if is_primary && session.lock().await.phase() == Phase::InWorld {
                     server_tick += 1;
                     let mut payload = Vec::with_capacity(8);
                     payload.extend_from_slice(&33_333u32.to_le_bytes());

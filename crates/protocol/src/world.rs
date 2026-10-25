@@ -312,6 +312,24 @@ pub fn uniform_section_data(block_id: i32) -> Vec<u8> {
     out
 }
 
+/// Build the `Data` blob for a section with no fluid anywhere, stored
+/// as a Byte palette (type 2) whose single entry is fluid id 0. Mirrors
+/// FluidSection.serializeForPacket with a ByteSectionPalette: the
+/// section is semantically empty, but its palette TYPE is non-Empty —
+/// the distinction the client's per-section state byte depends on (it
+/// mirrors the block storage's palette type for content sections).
+pub fn uniform_fluid_data() -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + 2 + 7 + SECTION_BLOCKS + 1);
+    out.push(2u8); // PaletteType::Byte
+    out.extend_from_slice(&1i16.to_le_bytes()); // one palette entry
+    out.push(0u8); // internal id 0
+    out.extend_from_slice(&0i32.to_le_bytes()); // external id 0 (Empty fluid)
+    out.extend_from_slice(&(SECTION_BLOCKS as u16).to_le_bytes());
+    out.resize(out.len() + SECTION_BLOCKS, 0u8); // all cells -> internal 0
+    out.push(0u8); // no level data
+    out
+}
+
 // ---------------------------------------------------------------------------
 // SetChunkHeightmap (132, zstd): fixed 1024-entry i32 array.
 
@@ -458,17 +476,22 @@ mod tests {
     #[test]
     fn set_fluids_empty_bytes() {
         let payload = SetFluids::empty(1, 2, 3).serialize();
-        assert_eq!(
-            payload,
-            vec![
-                0x01, // data present
-                1, 0, 0, 0, // x
-                2, 0, 0, 0, // y
-                3, 0, 0, 0, // z
-                0x02, // data length
-                0x00, 0x00, // Empty palette, no level data
-            ]
-        );
+        let mut expected = vec![
+            0x01, // data present
+            1, 0, 0, 0, // x
+            2, 0, 0, 0, // y
+            3, 0, 0, 0, // z
+        ];
+        // Data length as varint: 1 + 2 + 7 + 32768 + 1 = 32779 -> 0x8B 0x80 0x02.
+        expected.extend_from_slice(&[0x8b, 0x80, 0x02]);
+        expected.push(0x02); // Byte palette
+        expected.extend_from_slice(&1i16.to_le_bytes());
+        expected.push(0u8);
+        expected.extend_from_slice(&0i32.to_le_bytes());
+        expected.extend_from_slice(&(32768u16).to_le_bytes());
+        expected.resize(expected.len() + 32768, 0u8);
+        expected.push(0x00); // no level data
+        assert_eq!(payload, expected);
     }
 
     #[test]
@@ -555,8 +578,8 @@ impl SetColumn {
 /// chunk section. Null-bits byte (bit 0 = data present), x/y/z i32,
 /// then the data inline (single variable field, variable block
 /// starts at the fixed size 13). The reference sends it for EVERY
-/// section alongside SetChunk; an untouched section's data is the
-/// Empty palette with no level data: [0x00, 0x00].
+/// section alongside SetChunk; an untouched section's data is a
+/// uniform palette over fluid id 0 with no level data.
 pub struct SetFluids {
     pub x: i32,
     pub y: i32,
@@ -566,7 +589,7 @@ pub struct SetFluids {
 
 impl SetFluids {
     pub fn empty(x: i32, y: i32, z: i32) -> Self {
-        SetFluids { x, y, z, data: Some(vec![0x00, 0x00]) }
+        SetFluids { x, y, z, data: Some(uniform_fluid_data()) }
     }
 
     pub fn serialize(&self) -> Vec<u8> {

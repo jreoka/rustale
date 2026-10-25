@@ -312,22 +312,16 @@ pub fn uniform_section_data(block_id: i32) -> Vec<u8> {
     out
 }
 
-/// Build the `Data` blob for a section with no fluid anywhere, stored
-/// as a Byte palette (type 2) whose single entry is fluid id 0. Mirrors
-/// FluidSection.serializeForPacket with a ByteSectionPalette: the
-/// section is semantically empty, but its palette TYPE is non-Empty —
-/// the distinction the client's per-section state byte depends on (it
-/// mirrors the block storage's palette type for content sections).
+/// Build the `Data` blob for a section with no fluid anywhere,
+/// exactly as the reference's FluidSection.serializeForPacket emits
+/// it for a dry section: the Empty palette type (0) with no palette
+/// payload, then the has-level-data byte false. (An earlier build
+/// sent a Byte palette over fluid id 0, from the since-disproven
+/// palette-type theory of the join stall; with a palette present
+/// the client treats the section as fluid-filled — the player
+/// swims/sinks through the world at a constant rate.)
 pub fn uniform_fluid_data() -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + 2 + 7 + SECTION_BLOCKS + 1);
-    out.push(2u8); // PaletteType::Byte
-    out.extend_from_slice(&1i16.to_le_bytes()); // one palette entry
-    out.push(0u8); // internal id 0
-    out.extend_from_slice(&0i32.to_le_bytes()); // external id 0 (Empty fluid)
-    out.extend_from_slice(&(SECTION_BLOCKS as u16).to_le_bytes());
-    out.resize(out.len() + SECTION_BLOCKS, 0u8); // all cells -> internal 0
-    out.push(0u8); // no level data
-    out
+    vec![0u8, 0u8]
 }
 
 // ---------------------------------------------------------------------------
@@ -476,21 +470,15 @@ mod tests {
     #[test]
     fn set_fluids_empty_bytes() {
         let payload = SetFluids::empty(1, 2, 3).serialize();
-        let mut expected = vec![
+        let expected = vec![
             0x01, // data present
             1, 0, 0, 0, // x
             2, 0, 0, 0, // y
             3, 0, 0, 0, // z
+            0x02, // data: varint length 2
+            0x00, // Empty palette type
+            0x00, // no level data
         ];
-        // Data length as varint: 1 + 2 + 7 + 32768 + 1 = 32779 -> 0x8B 0x80 0x02.
-        expected.extend_from_slice(&[0x8b, 0x80, 0x02]);
-        expected.push(0x02); // Byte palette
-        expected.extend_from_slice(&1i16.to_le_bytes());
-        expected.push(0u8);
-        expected.extend_from_slice(&0i32.to_le_bytes());
-        expected.extend_from_slice(&(32768u16).to_le_bytes());
-        expected.resize(expected.len() + 32768, 0u8);
-        expected.push(0x00); // no level data
         assert_eq!(payload, expected);
     }
 

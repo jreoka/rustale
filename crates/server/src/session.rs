@@ -796,12 +796,19 @@ impl Session {
             .unwrap_or(8)
             .clamp(1, MAX_CHUNK_RADIUS);
         let ground_data = uniform_section_data(GROUND_BLOCK_ID);
-        // Diagnostic: RUSTALE_ALL_AIR=1 makes the ground sections air
-        // too, so every section is solid air (blocks and fluids both
-        // uniform id 0). The client's join readiness counts a column
-        // immediately when all its sections are solid air; content
-        // sections count only once their render data is built.
-        let all_air = std::env::var_os("RUSTALE_ALL_AIR").is_some();
+        // Diagnostic: the streamed world is ALL AIR by default right
+        // now — every section solid air (blocks and fluids both
+        // uniform id 0) is the one case the client's join readiness
+        // counts without waiting for render data to be built, so it
+        // separates "sections never register" from "content sections
+        // never become ready". RUSTALE_GROUND=1 restores the two
+        // solid block-1 ground sections.
+        let all_air = std::env::var_os("RUSTALE_GROUND").is_none();
+        println!(
+            "[server] streaming {} world ({} columns)",
+            if all_air { "all-air" } else { "flat" },
+            (2 * radius + 1) * (2 * radius + 1)
+        );
         let mut columns = 0;
         for cx in -radius..=radius {
             for cz in -radius..=radius {

@@ -184,9 +184,9 @@ pub enum AuthEffect {
 /// Sections 0 and 1 are solid; the walkable surface is the top of
 /// section 1, y = 63.
 pub const GROUND_TOP_Y: i32 = 63;
-/// Block id used for the ground sections. TODO: this must match the
-/// BlockType registry sent during setup; the registry is still empty,
-/// so visible ground waits on the BlockType transcription work.
+/// Block id used for the ground sections: id 1 in the BlockType
+/// registry sent during setup (the solid "Unknown" cube; id 0 is
+/// Empty/air).
 pub const GROUND_BLOCK_ID: i32 = 1;
 /// Cap on chunk columns streamed per axis, whatever the client asks for.
 pub const MAX_CHUNK_RADIUS: i32 = 32;
@@ -256,6 +256,12 @@ pub struct Session {
     chunks_sent: bool,
     teleport_sent: bool,
     movement_seen: u32,
+    /// Last absolute position decoded from ClientMovement.
+    last_position: Option<[f64; 3]>,
+    /// Next ClientTeleport id after the world-join teleport (id 0).
+    next_teleport_id: u8,
+    /// movement_seen value at the last fall recovery (cooldown).
+    last_recovery_at: Option<u32>,
     auth: Option<Arc<SessionAuthCtx>>,
     /// The world identity sent in JoinWorld. Random per session: the
     /// client keys persisted per-world state (map/exploration caches)
@@ -305,6 +311,9 @@ impl Default for Session {
             chunks_sent: false,
             teleport_sent: false,
             movement_seen: 0,
+            last_position: None,
+            next_teleport_id: 1,
+            last_recovery_at: None,
             auth: None,
             world_uuid: fresh_world_uuid(),
         }
@@ -369,7 +378,7 @@ impl Session {
             },
             ids::SETUP_FINALIZE => self.on_setup_finalize(&mut out),
             ids::CLIENT_READY => self.on_client_ready(payload, &mut out),
-            ids::CLIENT_MOVEMENT => self.on_client_movement(payload),
+            ids::CLIENT_MOVEMENT => self.on_client_movement(payload, &mut out),
             other => {
                 if matches!(self.phase, Phase::InWorld | Phase::AwaitClientReady) {
                     println!("[server] in-world packet id={other} ({} bytes)", payload.len());
@@ -389,7 +398,7 @@ impl Session {
     /// absolute position moves with its wish tells us if the client
     /// predicts movement locally or waits for the server to drive
     /// its entity.
-    fn on_client_movement(&mut self, payload: &[u8]) {
+    fn on_client_movement(&mut self, payload: &[u8], out: &mut SessionOutcome) {
         self.movement_seen += 1;
         if payload.len() < 109 {
             return;
@@ -402,6 +411,7 @@ impl Session {
         let look = [f32_at(48), f32_at(52), f32_at(56)];
         let wish = [f64_at(61), f64_at(69), f64_at(77)];
         let vel = [f64_at(85), f64_at(93), f64_at(101)];
+        self.last_position = Some(abs);
         let wish_active = wish.iter().any(|v| *v != 0.0);
         if wish_active || self.movement_seen % 100 == 0 {
             println!(
@@ -412,6 +422,42 @@ impl Session {
                 wish[0], wish[1], wish[2],
                 vel[0], vel[1], vel[2],
                 if bits & 0x20 != 0 { payload[60].to_string() } else { "-".into() },
+            );
+        }
+        // Fall recovery: the test world is flat with its top at
+        // GROUND_TOP_Y, so a player reporting y well below it is
+        // falling through (or out of) the world. Teleport them back
+        // to spawn instead of letting them fall forever — and if the
+        // ground still doesn't hold, the repeated recoveries in the
+        // log are the tell. Cooldown by packet count so a recovery
+        // teleport can't be re-triggered by the in-flight movement
+        // packets that predate it.
+        const FALL_RECOVERY_Y: f64 = 56.0;
+        const RECOVERY_COOLDOWN_PACKETS: u32 = 40;
+        if self.teleport_sent
+            && abs[1] < FALL_RECOVERY_Y
+            && self
+                .last_recovery_at
+                .map(|at| self.movement_seen - at >= RECOVERY_COOLDOWN_PACKETS)
+                .unwrap_or(true)
+        {
+            self.last_recovery_at = Some(self.movement_seen);
+            let teleport_id = self.next_teleport_id;
+            self.next_teleport_id = self.next_teleport_id.wrapping_add(1);
+            out.packets.push((
+                ids::CLIENT_TELEPORT,
+                ClientTeleport {
+                    teleport_id,
+                    position: SPAWN_POSITION,
+                    body_orientation: [0.0; 3],
+                    look_orientation: [0.0; 3],
+                    reset_velocity: true,
+                }
+                .serialize(),
+            ));
+            println!(
+                "[server] fall recovery: teleport {teleport_id} to spawn (player y was {:.2})",
+                abs[1]
             );
         }
     }
@@ -1047,6 +1093,59 @@ mod tests {
         let out = s.handle(ids::CLIENT_READY, &[0b11]);
         assert!(out.packets.is_empty());
         assert!(out.chunk_packets.is_empty());
+    }
+
+    #[test]
+    fn fall_recovery_teleports_a_falling_player_to_spawn() {
+        // ClientMovement payload with the absolute position at the
+        // decoder's offsets (x 12, y 20, z 28, all f64).
+        fn movement(y: f64) -> Vec<u8> {
+            let mut p = vec![0u8; 109];
+            p[12..20].copy_from_slice(&8.0f64.to_le_bytes());
+            p[20..28].copy_from_slice(&y.to_le_bytes());
+            p[28..36].copy_from_slice(&8.0f64.to_le_bytes());
+            p
+        }
+        let mut s = Session::new();
+        s.teleport_sent = true; // as after the world-join teleport
+
+        // Standing at spawn height: no recovery, position tracked.
+        let mut out = SessionOutcome::default();
+        s.on_client_movement(&movement(66.0), &mut out);
+        assert!(out.packets.is_empty());
+        assert_eq!(s.last_position, Some([8.0, 66.0, 8.0]));
+
+        // Below the world: recovery teleport id 1 back to spawn
+        // (ClientTeleport: id byte 0, position f64s at 6/14/22).
+        let mut out = SessionOutcome::default();
+        s.on_client_movement(&movement(30.0), &mut out);
+        assert_eq!(out.packets.len(), 1);
+        assert_eq!(out.packets[0].0, ids::CLIENT_TELEPORT);
+        let payload = &out.packets[0].1;
+        assert_eq!(payload.len(), 55);
+        assert_eq!(payload[0], 1);
+        assert_eq!(
+            f64::from_le_bytes(payload[14..22].try_into().unwrap()),
+            SPAWN_POSITION[1]
+        );
+
+        // Cooldown: an in-flight pre-teleport movement packet at the
+        // same depth must not immediately re-trigger.
+        let mut out = SessionOutcome::default();
+        s.on_client_movement(&movement(29.0), &mut out);
+        assert!(out.packets.is_empty());
+
+        // After the cooldown window, a still-falling player is
+        // recovered again with the next teleport id.
+        for _ in 0..40 {
+            let mut out = SessionOutcome::default();
+            s.on_client_movement(&movement(66.0), &mut out);
+            assert!(out.packets.is_empty());
+        }
+        let mut out = SessionOutcome::default();
+        s.on_client_movement(&movement(20.0), &mut out);
+        assert_eq!(out.packets.len(), 1);
+        assert_eq!(out.packets[0].1[0], 2);
     }
 
     #[test]

@@ -392,14 +392,55 @@ fn model_texture(texture: &str) -> Vec<u8> {
     w.buf
 }
 
+/// One BlockFaceSupport entry in its ALL form — FaceType "Full",
+/// Filler null — the value the reference's BlockType.processConfig
+/// assigns to every neighbor of a solid cube (ALL_SUPPORTING_FACES).
+/// Layout per the generated BlockFaceSupport definition
+/// (FixedBlockSize 1, VariableFieldCount 2, VariableBlockStart 9):
+/// null bits 0x01 (FaceType present), the FaceType offset slot (0 —
+/// the string is the first variable field), the Filler slot at -1,
+/// then the string itself.
+fn block_face_support_all(w: &mut Writer) {
+    w.write_u8(0x01);
+    w.write_i32(0);
+    w.write_i32(-1);
+    w.write_string("Full", 4096000).expect("short face type");
+}
+
+/// The Supporting map (BlockType variable field 7, null bit
+/// byte1/0x20): a Dictionary<BlockNeighbor, BlockFaceSupport[]>.
+/// processConfig ALWAYS materializes it: a Cube-family block
+/// (GizmoCube/Cube/CubeWithModel) with Solid material whose config
+/// leaves it unset gets ALL_SUPPORTING_FACES — all 26 BlockNeighbor
+/// keys in ordinal order, each mapped to [ALL] — and every other
+/// block gets the empty map. Sending it null was the standing
+/// root-cause candidate for the player sinking through the ground:
+/// the client's physics sweep consults the supporting faces of the
+/// block under the player.
+fn write_supporting(w: &mut Writer, draw_type: u8, material: u8) {
+    // DrawType: Empty 0, GizmoCube 1, Cube 2, Model 3, CubeWithModel 4.
+    // BlockMaterial: Empty 0, Solid 1.
+    let solid_cube = material == 1 && matches!(draw_type, 1 | 2 | 4);
+    if !solid_cube {
+        w.write_var_int(0); // empty map
+        return;
+    }
+    w.write_var_int(26);
+    for key in 0..26u8 {
+        w.write_u8(key); // BlockNeighbor ordinal
+        w.write_var_int(1); // one BlockFaceSupport
+        block_face_support_all(w);
+    }
+}
+
 fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: bool, support: bool) -> Vec<u8> {
     // Mirror the reference BlockType.toPacket() materialization: Tint,
-    // BiomeTint, ShaderEffect, ModelTexture and CubeTextures are ALWAYS
-    // present in a real packet (defaults when unset) — the client's
-    // preparation dereferences them.
+    // BiomeTint, ShaderEffect, ModelTexture, Supporting and
+    // CubeTextures are ALWAYS present in a real packet (defaults when
+    // unset) — the client's preparation dereferences them.
     let mut fixed = [0u8; 177];
     fixed[0] = 0x98; // null bits: Name | Tint | BiomeTint present
-    fixed[1] = 0x45 | if support { 0x10 } else { 0 }; // ShaderEffect | ModelTexture | CubeTextures (| Support)
+    fixed[1] = 0x65 | if support { 0x10 } else { 0 }; // ShaderEffect | ModelTexture | Supporting | CubeTextures (| Support)
     // Interactions is ALWAYS present in a real packet: toPacket()
     // sets it unconditionally (an empty map when the block has
     // none). The client's movement controller dereferences the
@@ -412,42 +453,18 @@ fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: boo
     fixed[7] = opacity;
     fixed[16..20].copy_from_slice(&1.0f32.to_le_bytes()); // ModelScale
     fixed[20..24].copy_from_slice(&1.0f32.to_le_bytes()); // ModelAnimationSpeed
-    if name == "Unknown" && std::env::var_os("RUSTALE_BLOCK_BYTES_ONE").is_some() {
-        // Diagnostic: the client's physics sweep gates block
-        // collision on a runtime byte that must equal 1, copied
-        // from an as-yet-unidentified packet byte field. Set every
-        // ambiguous byte/bool field to 1 to find whether the gate
-        // is one of them; bisect once the player lands.
-        fixed[24] = 1; // Looping
-        fixed[29] = 1; // BlockSupportsRequiredFor
-        fixed[30] = 1; // RequiresAlphaBlending
-        fixed[31] = 1; // CubeShadingMode
-        fixed[32] = 1; // RandomRotation
-        fixed[33] = 1; // VariantRotation
-        fixed[34] = 1; // RotationYawPlacementOffset
-        fixed[51] = 1; // ParticleColor
-        fixed[54] = 1; // TextureComputedColor
-        fixed[57] = 1; // Light
-        fixed[113] = 1; // MovementSettings.IsClimbable
-        fixed[126] = 1; // MovementSettings.IsBouncy
-        fixed[155] = 1; // MovementSettings.DisableAutoStep
-        fixed[156] = 3; // PlacementSettings.AllowRotationKey|PlaceInEmptyBlocks (bit-packed)
-        fixed[157] = 1; // PlacementSettings.PreviewVisibility
-        fixed[158] = 1; // PlacementSettings.RotationMode
-        fixed[171] = 1; // PlacementSettings.AllowBreakReplace
-        fixed[172] = 1; // IgnoreSupportWhenPlaced
-    }
     fixed[61..85].fill(0xFF); // Tint: six i32 at -1
     // BiomeTint at 85..109 stays zeroed (the config defaults are 0).
     fixed[173..177].copy_from_slice(&i32::MIN.to_le_bytes()); // TransitionToTag = TAG_NOT_FOUND
     let mut w = Writer::new();
     w.buf.extend_from_slice(&fixed);
     // Slots in variable-field order: Name 1, ShaderEffect 2,
-    // ModelTexture 4, Support 6, CubeTextures 8, Interactions 20.
+    // ModelTexture 4, Support 6, Supporting 7, CubeTextures 8,
+    // Interactions 20.
     let slots: Vec<usize> = (0..25).map(|_| w.reserve_offset()).collect();
     let var_start = w.position();
     debug_assert_eq!(var_start, 277);
-    let present = [1usize, 2, 4, 8, 20];
+    let present = [1usize, 2, 4, 7, 8, 20];
     for (i, slot) in slots.iter().enumerate() {
         if !present.contains(&i) && !(support && i == 6) {
             w.write_offset_at(*slot, -1);
@@ -465,6 +482,8 @@ fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: boo
         w.write_offset_at(slots[6], (w.position() - var_start) as i32);
         w.write_var_int(0); // Support = empty map (air needs none)
     }
+    w.write_offset_at(slots[7], (w.position() - var_start) as i32);
+    write_supporting(&mut w, draw_type, material);
     w.write_offset_at(slots[8], (w.position() - var_start) as i32);
     w.write_var_int(1); // CubeTextures = [Unknown]
     w.buf.extend_from_slice(&block_textures("BlockTextures/Unknown.png"));
@@ -912,13 +931,15 @@ mod tests {
         assert_eq!(payload[12], 0x98);
         assert_eq!(payload[12 + 5], 0); // DrawType Empty
         assert_eq!(&payload[12 + 61..12 + 65], &[0xFF; 4]); // Tint top = -1
-        // Entry 0 is 505 bytes, so entry 1's key sits at 12 + 505 = 517:
+        // Entry 0 is 506 bytes (505 + 1 for the now-present empty
+        // Supporting map), so entry 1's key sits at 12 + 506 = 518:
         // the canonical Unknown block (unknown flag set, solid cube).
-        assert_eq!(&payload[517..521], &1i32.to_le_bytes());
-        assert_eq!(payload[521 + 4], 1); // Unknown flag
-        assert_eq!(payload[521 + 5], 2); // DrawType Cube
-        assert_eq!(payload[521 + 6], 1); // Material Solid
-        assert_eq!(payload.len(), 517 + 4 + 506);
+        assert_eq!(&payload[518..522], &1i32.to_le_bytes());
+        assert_eq!(payload[522 + 4], 1); // Unknown flag
+        assert_eq!(payload[522 + 5], 2); // DrawType Cube
+        assert_eq!(payload[522 + 6], 1); // Material Solid
+        // Entry 1 is 923 bytes: 506 + the 417-byte ALL_SUPPORTING_FACES map.
+        assert_eq!(payload.len(), 518 + 4 + 923);
     }
 
     #[test]
@@ -975,5 +996,62 @@ mod registry_layout_tests {
         // UpdateCameraShake (77): NO MaxId: nullbits(1) + Type(1) +
         // inline empty dict = 3 bytes.
         assert_eq!(get(77), vec![0x01, 0x00, 0x00]);
+    }
+}
+
+#[cfg(test)]
+mod supporting_tests {
+    use super::*;
+
+    #[test]
+    fn supporting_all_map_bytes_match_generated_layout() {
+        // Expected bytes derived from the generated readers, not from
+        // this crate's own round trip: the Supporting dictionary is
+        // varint count 26; per entry a 1-byte BlockNeighbor key
+        // (0..25), a varint array length of 1, then one
+        // BlockFaceSupport — null bits 0x01 (FaceType present,
+        // Filler null), FaceType offset slot 0, Filler slot -1, and
+        // the varint-prefixed string "Full".
+        let mut expected = vec![26u8];
+        for key in 0..26u8 {
+            expected.push(key);
+            expected.push(1); // array length
+            expected.push(0x01); // BlockFaceSupport null bits
+            expected.extend_from_slice(&0i32.to_le_bytes()); // FaceType at offset 0
+            expected.extend_from_slice(&(-1i32).to_le_bytes()); // Filler null
+            expected.extend_from_slice(&[4, b'F', b'u', b'l', b'l']);
+        }
+        let mut w = Writer::new();
+        write_supporting(&mut w, 2, 1); // Cube + Solid
+        assert_eq!(w.buf.len(), 417);
+        assert_eq!(w.buf, expected);
+    }
+
+    #[test]
+    fn supporting_empty_for_non_solid_cube_family() {
+        let mut w = Writer::new();
+        write_supporting(&mut w, 0, 0); // Empty block
+        assert_eq!(w.buf, vec![0]);
+    }
+
+    #[test]
+    fn block_types_carry_supporting() {
+        // Slot i sits at byte 177 + 4*i in the packet; variable data
+        // starts at 277. Offsets are relative to 277.
+        let slot = |pkt: &[u8], i: usize| {
+            i32::from_le_bytes(pkt[177 + i * 4..177 + i * 4 + 4].try_into().unwrap())
+        };
+        let unknown = block_type("Unknown", 2, 1, 0, true, false);
+        assert_eq!(unknown[1] & 0x20, 0x20, "Supporting null bit set");
+        assert_eq!(slot(&unknown, 6), -1, "Unknown keeps Support null");
+        let off = slot(&unknown, 7);
+        assert!(off > 0, "Supporting offset written");
+        assert_eq!(unknown[277 + off as usize], 26, "ALL map entry count");
+
+        let empty = block_type("Empty", 0, 0, 3, false, true);
+        assert_eq!(empty[1] & 0x30, 0x30, "Empty: Support + Supporting bits");
+        let eoff = slot(&empty, 7);
+        assert!(eoff > 0, "Empty Supporting offset written");
+        assert_eq!(empty[277 + eoff as usize], 0, "Empty Supporting is the empty map");
     }
 }

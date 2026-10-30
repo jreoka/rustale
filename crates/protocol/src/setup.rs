@@ -544,6 +544,32 @@ fn block_types_init_packet() -> Vec<u8> {
 /// UpdateBlockHitboxes (41) with id 0 = one full-cube hitbox. BlockType
 /// Hitbox/InteractionHitbox indexes point at 0 in our blocks; the store
 /// must not be empty when the client resolves them during preparation.
+/// UpdateHitboxCollisionConfig (74) with one entry: the default
+/// entity-vs-world collision config (key 0). The generic empty
+/// init leaves this store empty; the vanilla store is populated
+/// from the asset pack, and an entity whose collision config
+/// cannot resolve gets no collision processing at all — a
+/// standing suspect for the player falling through the world
+/// while every block-side value is correct. Values are the
+/// config class's field defaults (HitboxCollisionConfig.java):
+/// CollisionType Hard (0), SoftCollisionOffsetRatio 1,
+/// RotateHitbox false, AllowEntityAnchoring true,
+/// RotateAnchoredEntities false (bool bits 0x02). Layout per
+/// the generated HitboxCollisionConfig (FixedBlockSize 6):
+/// [type byte][f32][bool-bits byte].
+fn hitbox_collision_config_init_packet() -> Vec<u8> {
+    let mut w = Writer::new();
+    w.write_u8(0x01); // null bits: dict present
+    w.write_u8(0); // Type = Init
+    w.write_i32(1); // MaxId = next index
+    w.write_var_int(1); // dict: one entry
+    w.write_i32(0); // key 0
+    w.write_u8(0); // CollisionType = Hard
+    w.write_f32(1.0); // SoftCollisionOffsetRatio
+    w.write_u8(0x02); // AllowEntityAnchoring
+    w.buf
+}
+
 fn block_hitboxes_init_packet() -> Vec<u8> {
     let mut w = Writer::new();
     w.write_u8(0x01); // null bits: dict present
@@ -685,6 +711,7 @@ pub fn empty_registry_init_packets() -> Vec<(i32, Vec<u8>)> {
             41 => (s.id, block_hitboxes_init_packet()),
             47 => (s.id, weathers_init_packet()),
             61 => (s.id, environments_init_packet()),
+            74 => (s.id, hitbox_collision_config_init_packet()),
             83 => (s.id, fluids_init_packet()),
             _ => (s.id, serialize_empty_init(s)),
         })
@@ -945,6 +972,23 @@ mod tests {
             WorldSettings { required_assets: Some(vec![]) }.serialize().unwrap(),
             vec![0x01, 0x00]
         );
+    }
+
+    #[test]
+    fn hitbox_collision_config_init_bytes() {
+        let packets = empty_registry_init_packets();
+        let (_, payload) = packets.iter().find(|(id, _)| *id == 74).unwrap();
+        // nullbits | Type=Init | MaxId=1 | count 1 | key 0 |
+        // CollisionType Hard | SoftCollisionOffsetRatio 1.0 |
+        // bool bits: AllowEntityAnchoring only.
+        let mut expected = vec![0x01, 0x00];
+        expected.extend_from_slice(&1i32.to_le_bytes());
+        expected.push(0x01);
+        expected.extend_from_slice(&0i32.to_le_bytes());
+        expected.push(0x00);
+        expected.extend_from_slice(&1.0f32.to_le_bytes());
+        expected.push(0x02);
+        assert_eq!(*payload, expected);
     }
 
     #[test]

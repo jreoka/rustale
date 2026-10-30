@@ -542,14 +542,56 @@ fn apply_gate_bisect(fixed: &mut [u8; 177]) {
     }
 }
 
+/// True when RUSTALE_GATE_BISECT=october: replicate the
+/// 2026-10-25 shotgun build (commit ea3b398) byte-for-byte at
+/// the BlockType level. That build is the only one ever
+/// observed to open the collision gate (the client then
+/// crashed in the stand-on query), but it differs from the
+/// current build in more than the poked bytes: Supporting was
+/// still null on both blocks, and the pokes were raw fixed-
+/// block bytes — no presence bits for the color/light/
+/// placement structs, and the PlacementSettings bool bits
+/// were 3, not 1. The 2026-10-29 candidate bisect (presence
+/// bits set, value 1) does NOT reproduce it; this mode does,
+/// so a live run either reproduces the October crash
+/// (harness validated; then bisect the replica's deltas) or
+/// proves the difference lives outside block_type entirely.
+fn october_replica() -> bool {
+    std::env::var("RUSTALE_GATE_BISECT").map(|v| v.trim() == "october").unwrap_or(false)
+}
+
+/// The ea3b398 RUSTALE_BLOCK_BYTES_ONE pokes, verbatim.
+fn apply_october_pokes(fixed: &mut [u8; 177]) {
+    fixed[24] = 1; // Looping
+    fixed[29] = 1; // BlockSupportsRequiredFor
+    fixed[30] = 1; // RequiresAlphaBlending
+    fixed[31] = 1; // CubeShadingMode
+    fixed[32] = 1; // RandomRotation
+    fixed[33] = 1; // VariantRotation
+    fixed[34] = 1; // RotationYawPlacementOffset
+    fixed[51] = 1; // ParticleColor (first byte; field stays null)
+    fixed[54] = 1; // TextureComputedColor (first byte; null)
+    fixed[57] = 1; // Light (first byte; null)
+    fixed[113] = 1; // MovementSettings.IsClimbable
+    fixed[126] = 1; // MovementSettings.IsBouncy
+    fixed[155] = 1; // MovementSettings.DisableAutoStep
+    fixed[156] = 3; // PlacementSettings bits (field stays null)
+    fixed[157] = 1; // PlacementSettings.PreviewVisibility
+    fixed[158] = 1; // PlacementSettings.RotationMode
+    fixed[171] = 1; // PlacementSettings.AllowBreakReplace
+    fixed[172] = 1; // IgnoreSupportWhenPlaced
+}
+
 fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: bool, support: bool) -> Vec<u8> {
     // Mirror the reference BlockType.toPacket() materialization: Tint,
     // BiomeTint, ShaderEffect, ModelTexture, Supporting and
     // CubeTextures are ALWAYS present in a real packet (defaults when
     // unset) — the client's preparation dereferences them.
+    let october = october_replica();
     let mut fixed = [0u8; 177];
     fixed[0] = 0x98; // null bits: Name | Tint | BiomeTint present
-    fixed[1] = 0x65 | if support { 0x10 } else { 0 }; // ShaderEffect | ModelTexture | Supporting | CubeTextures (| Support)
+    // In october mode Supporting is null again, as in ea3b398.
+    fixed[1] = (if october { 0x45 } else { 0x65 }) | if support { 0x10 } else { 0 }; // ShaderEffect | ModelTexture | Supporting | CubeTextures (| Support)
     // Interactions is ALWAYS present in a real packet: toPacket()
     // sets it unconditionally (an empty map when the block has
     // none). The client's movement controller dereferences the
@@ -565,6 +607,9 @@ fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: boo
     fixed[61..85].fill(0xFF); // Tint: six i32 at -1
     // BiomeTint at 85..109 stays zeroed (the config defaults are 0).
     fixed[173..177].copy_from_slice(&i32::MIN.to_le_bytes()); // TransitionToTag = TAG_NOT_FOUND
+    if october && unknown {
+        apply_october_pokes(&mut fixed);
+    }
     if unknown {
         apply_gate_bisect(&mut fixed);
     }
@@ -576,7 +621,11 @@ fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: boo
     let slots: Vec<usize> = (0..25).map(|_| w.reserve_offset()).collect();
     let var_start = w.position();
     debug_assert_eq!(var_start, 277);
-    let present = [1usize, 2, 4, 7, 8, 20];
+    let present: &[usize] = if october {
+        &[1, 2, 4, 8, 20]
+    } else {
+        &[1, 2, 4, 7, 8, 20]
+    };
     for (i, slot) in slots.iter().enumerate() {
         if !present.contains(&i) && !(support && i == 6) {
             w.write_offset_at(*slot, -1);
@@ -594,8 +643,10 @@ fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: boo
         w.write_offset_at(slots[6], (w.position() - var_start) as i32);
         w.write_var_int(0); // Support = empty map (air needs none)
     }
-    w.write_offset_at(slots[7], (w.position() - var_start) as i32);
-    write_supporting(&mut w, draw_type, material);
+    if !october {
+        w.write_offset_at(slots[7], (w.position() - var_start) as i32);
+        write_supporting(&mut w, draw_type, material);
+    }
     w.write_offset_at(slots[8], (w.position() - var_start) as i32);
     w.write_var_int(1); // CubeTextures = [Unknown]
     w.buf.extend_from_slice(&block_textures("BlockTextures/Unknown.png"));

@@ -433,165 +433,18 @@ fn write_supporting(w: &mut Writer, draw_type: u8, material: u8) {
     }
 }
 
-/// Diagnostic for the sinking investigation (2026-10-29): the
-/// client-side collision gate for a block is a single byte in
-/// the BlockType fixed block, proven on 2026-10-25 to be one of
-/// the fields the old all-ones shotgun flipped (with every
-/// candidate set, the gate passed and the client moved on to a
-/// different crash). RUSTALE_GATE_BISECT=<name>[,<name>...]
-/// sets exactly the named candidate fields to 1 on the Unknown
-/// (ground) block so a live test can bisect which field the
-/// gate is. "all" reproduces the full shotgun. Offsets are the
-/// field positions in the generated BlockType.Serialize order
-/// (FixedBlockSize 177): Looping 24, BlockSupportsRequiredFor
-/// 29, RequiresAlphaBlending 30, CubeShadingMode 31,
-/// RandomRotation 32, VariantRotation 33,
-/// RotationYawPlacementOffset 34, MovementSettings at 113
-/// (IsClimbable +0, IsBouncy +13, DisableAutoStep +42),
-/// PlacementSettings at 156 (bool bits +0, PreviewVisibility
-/// +1, RotationMode +2, AllowBreakReplace +15; presence is
-/// null-bit byte0 0x20), IgnoreSupportWhenPlaced 172.
-fn apply_gate_bisect(fixed: &mut [u8; 177]) {
-    let Ok(spec) = std::env::var("RUSTALE_GATE_BISECT") else {
-        return;
-    };
-    {
-        // Log the active spec once so a pasted server log shows
-        // whether the diagnostic actually took effect.
-        static LOGGED: std::sync::Once = std::sync::Once::new();
-        LOGGED.call_once(|| {
-            eprintln!("[setup] gate bisect active: {spec}");
-        });
-    }
-    const ALL: [&str; 18] = [
-        "looping",
-        "supports-required",
-        "alpha-blending",
-        "shading",
-        "random-rotation",
-        "variant-rotation",
-        "yaw-offset",
-        "climbable",
-        "bouncy",
-        "disable-auto-step",
-        "placement-bits",
-        "placement-visibility",
-        "placement-rotation",
-        "allow-break-replace",
-        "ignore-support",
-        "particle-color",
-        "texture-color",
-        "light",
-    ];
-    let mut names: Vec<&str> = Vec::new();
-    for name in spec.split(',') {
-        let name = name.trim();
-        if name == "all" {
-            names.extend(ALL);
-        } else {
-            names.push(name);
-        }
-    }
-    for name in names {
-        match name {
-            "looping" => fixed[24] = 1,
-            "supports-required" => fixed[29] = 1,
-            "alpha-blending" => fixed[30] = 1,
-            "shading" => fixed[31] = 1,
-            "random-rotation" => fixed[32] = 1,
-            "variant-rotation" => fixed[33] = 1,
-            "yaw-offset" => fixed[34] = 1,
-            "climbable" => fixed[113] = 1,
-            "bouncy" => fixed[126] = 1,
-            "disable-auto-step" => fixed[155] = 1,
-            "placement-bits" => {
-                fixed[0] |= 0x20;
-                fixed[156] = 1;
-            }
-            "placement-visibility" => {
-                fixed[0] |= 0x20;
-                fixed[157] = 1;
-            }
-            "placement-rotation" => {
-                fixed[0] |= 0x20;
-                fixed[158] = 1;
-            }
-            "allow-break-replace" => {
-                fixed[0] |= 0x20;
-                fixed[171] = 1;
-            }
-            "ignore-support" => fixed[172] = 1,
-            // The October shotgun also built the three
-            // nullable color/light structs with every byte 1;
-            // they are absent (null) in the stock build, so
-            // setting them means presence bit + 0x01 bytes.
-            "particle-color" => {
-                fixed[0] |= 0x01;
-                fixed[51..54].fill(1);
-            }
-            "texture-color" => {
-                fixed[0] |= 0x02;
-                fixed[54..57].fill(1);
-            }
-            "light" => {
-                fixed[0] |= 0x04;
-                fixed[57..61].fill(1);
-            }
-            _ => {}
-        }
-    }
-}
 
-/// True when RUSTALE_GATE_BISECT=october: replicate the
-/// 2026-10-25 shotgun build (commit ea3b398) byte-for-byte at
-/// the BlockType level. That build is the only one ever
-/// observed to open the collision gate (the client then
-/// crashed in the stand-on query), but it differs from the
-/// current build in more than the poked bytes: Supporting was
-/// still null on both blocks, and the pokes were raw fixed-
-/// block bytes — no presence bits for the color/light/
-/// placement structs, and the PlacementSettings bool bits
-/// were 3, not 1. The 2026-10-29 candidate bisect (presence
-/// bits set, value 1) does NOT reproduce it; this mode does,
-/// so a live run either reproduces the October crash
-/// (harness validated; then bisect the replica's deltas) or
-/// proves the difference lives outside block_type entirely.
-fn october_replica() -> bool {
-    std::env::var("RUSTALE_GATE_BISECT").map(|v| v.trim() == "october").unwrap_or(false)
-}
 
-/// The ea3b398 RUSTALE_BLOCK_BYTES_ONE pokes, verbatim.
-fn apply_october_pokes(fixed: &mut [u8; 177]) {
-    fixed[24] = 1; // Looping
-    fixed[29] = 1; // BlockSupportsRequiredFor
-    fixed[30] = 1; // RequiresAlphaBlending
-    fixed[31] = 1; // CubeShadingMode
-    fixed[32] = 1; // RandomRotation
-    fixed[33] = 1; // VariantRotation
-    fixed[34] = 1; // RotationYawPlacementOffset
-    fixed[51] = 1; // ParticleColor (first byte; field stays null)
-    fixed[54] = 1; // TextureComputedColor (first byte; null)
-    fixed[57] = 1; // Light (first byte; null)
-    fixed[113] = 1; // MovementSettings.IsClimbable
-    fixed[126] = 1; // MovementSettings.IsBouncy
-    fixed[155] = 1; // MovementSettings.DisableAutoStep
-    fixed[156] = 3; // PlacementSettings bits (field stays null)
-    fixed[157] = 1; // PlacementSettings.PreviewVisibility
-    fixed[158] = 1; // PlacementSettings.RotationMode
-    fixed[171] = 1; // PlacementSettings.AllowBreakReplace
-    fixed[172] = 1; // IgnoreSupportWhenPlaced
-}
 
 fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: bool, support: bool) -> Vec<u8> {
     // Mirror the reference BlockType.toPacket() materialization: Tint,
     // BiomeTint, ShaderEffect, ModelTexture, Supporting and
     // CubeTextures are ALWAYS present in a real packet (defaults when
     // unset) — the client's preparation dereferences them.
-    let october = october_replica();
     let mut fixed = [0u8; 177];
     fixed[0] = 0x98; // null bits: Name | Tint | BiomeTint present
-    // In october mode Supporting is null again, as in ea3b398.
-    fixed[1] = (if october { 0x45 } else { 0x65 }) | if support { 0x10 } else { 0 }; // ShaderEffect | ModelTexture | Supporting | CubeTextures (| Support)
+    fixed[1] = 0x65 | if support { 0x10 } else { 0 }; // ShaderEffect | ModelTexture | Supporting | CubeTextures (| Support)
+    fixed[2] = 0x40; // null bits: InteractionHint present
     // Interactions is ALWAYS present in a real packet: toPacket()
     // sets it unconditionally (an empty map when the block has
     // none). The client's movement controller dereferences the
@@ -602,30 +455,42 @@ fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: boo
     fixed[5] = draw_type;
     fixed[6] = material;
     fixed[7] = opacity;
+    fixed[12..16].copy_from_slice(&i32::MIN.to_le_bytes()); // InteractionHitbox = NOT_FOUND (no interaction hitbox configured)
     fixed[16..20].copy_from_slice(&1.0f32.to_le_bytes()); // ModelScale
     fixed[20..24].copy_from_slice(&1.0f32.to_le_bytes()); // ModelAnimationSpeed
+    // The vanilla config defaults (BlockType field initializers,
+    // materialized by toPacket): BlockSupportsRequiredFor = All,
+    // SoundOcclusionOpacity = 1. Both were 0 in the hand-built
+    // version; BlockSupportsRequiredFor is a leading candidate
+    // for the client's collision gate byte (real blocks send 1,
+    // we sent 0, and the collision sweep rejects gate == 0).
+    fixed[29] = 1; // BlockSupportsRequiredFor = All
+    fixed[43..47].copy_from_slice(&1.0f32.to_le_bytes()); // SoundOcclusionOpacity
+    // BlockMovementSettings defaults (its field initializers):
+    // climb multipliers 1, Drag 0.82, Friction 0.18, terminal
+    // velocity modifier 1, horizontal speed multiplier 1, jump
+    // force multiplier 1; the rest 0. The hand-built version
+    // sent the whole struct zeroed.
+    fixed[114..118].copy_from_slice(&1.0f32.to_le_bytes()); // ClimbUpSpeedMultiplier
+    fixed[118..122].copy_from_slice(&1.0f32.to_le_bytes()); // ClimbDownSpeedMultiplier
+    fixed[122..126].copy_from_slice(&1.0f32.to_le_bytes()); // ClimbLateralSpeedMultiplier
+    fixed[131..135].copy_from_slice(&0.82f32.to_le_bytes()); // Drag
+    fixed[135..139].copy_from_slice(&0.18f32.to_le_bytes()); // Friction
+    fixed[139..143].copy_from_slice(&1.0f32.to_le_bytes()); // TerminalVelocityModifier
+    fixed[143..147].copy_from_slice(&1.0f32.to_le_bytes()); // HorizontalSpeedMultiplier
+    fixed[151..155].copy_from_slice(&1.0f32.to_le_bytes()); // JumpForceMultiplier
     fixed[61..85].fill(0xFF); // Tint: six i32 at -1
     // BiomeTint at 85..109 stays zeroed (the config defaults are 0).
     fixed[173..177].copy_from_slice(&i32::MIN.to_le_bytes()); // TransitionToTag = TAG_NOT_FOUND
-    if october && unknown {
-        apply_october_pokes(&mut fixed);
-    }
-    if unknown {
-        apply_gate_bisect(&mut fixed);
-    }
     let mut w = Writer::new();
     w.buf.extend_from_slice(&fixed);
     // Slots in variable-field order: Name 1, ShaderEffect 2,
     // ModelTexture 4, Support 6, Supporting 7, CubeTextures 8,
-    // Interactions 20.
+    // InteractionHint 16, Interactions 20.
     let slots: Vec<usize> = (0..25).map(|_| w.reserve_offset()).collect();
     let var_start = w.position();
     debug_assert_eq!(var_start, 277);
-    let present: &[usize] = if october {
-        &[1, 2, 4, 8, 20]
-    } else {
-        &[1, 2, 4, 7, 8, 20]
-    };
+    let present = [1usize, 2, 4, 7, 8, 16, 20];
     for (i, slot) in slots.iter().enumerate() {
         if !present.contains(&i) && !(support && i == 6) {
             w.write_offset_at(*slot, -1);
@@ -643,13 +508,15 @@ fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: boo
         w.write_offset_at(slots[6], (w.position() - var_start) as i32);
         w.write_var_int(0); // Support = empty map (air needs none)
     }
-    if !october {
-        w.write_offset_at(slots[7], (w.position() - var_start) as i32);
-        write_supporting(&mut w, draw_type, material);
-    }
+    w.write_offset_at(slots[7], (w.position() - var_start) as i32);
+    write_supporting(&mut w, draw_type, material);
     w.write_offset_at(slots[8], (w.position() - var_start) as i32);
     w.write_var_int(1); // CubeTextures = [Unknown]
     w.buf.extend_from_slice(&block_textures("BlockTextures/Unknown.png"));
+    // processConfig assigns every block the generic hint when
+    // nothing more specific applies; the real packet carries it.
+    w.write_offset_at(slots[16], (w.position() - var_start) as i32);
+    w.write_string("server.interactionHints.generic", 4096).expect("short hint");
     w.write_offset_at(slots[20], (w.position() - var_start) as i32);
     w.write_var_int(0); // Interactions = empty map (never null)
     w.buf
@@ -1094,15 +961,30 @@ mod tests {
         assert_eq!(payload[12], 0x98);
         assert_eq!(payload[12 + 5], 0); // DrawType Empty
         assert_eq!(&payload[12 + 61..12 + 65], &[0xFF; 4]); // Tint top = -1
-        // Entry 0 is 506 bytes (505 + 1 for the now-present empty
-        // Supporting map), so entry 1's key sits at 12 + 506 = 518:
+        // Entry 0 is 538 bytes (506 + 32 for the InteractionHint
+        // string), so entry 1's key sits at 12 + 538 = 550:
         // the canonical Unknown block (unknown flag set, solid cube).
-        assert_eq!(&payload[518..522], &1i32.to_le_bytes());
-        assert_eq!(payload[522 + 4], 1); // Unknown flag
-        assert_eq!(payload[522 + 5], 2); // DrawType Cube
-        assert_eq!(payload[522 + 6], 1); // Material Solid
-        // Entry 1 is 923 bytes: 506 + the 417-byte ALL_SUPPORTING_FACES map.
-        assert_eq!(payload.len(), 518 + 4 + 923);
+        assert_eq!(&payload[550..554], &1i32.to_le_bytes());
+        assert_eq!(payload[554 + 4], 1); // Unknown flag
+        assert_eq!(payload[554 + 5], 2); // DrawType Cube
+        assert_eq!(payload[554 + 6], 1); // Material Solid
+        // The vanilla config values, derived from the reference
+        // BlockType/BlockMovementSettings field defaults and
+        // toPacket (not from this crate's own round trip):
+        assert_eq!(payload[554 + 29], 1); // BlockSupportsRequiredFor = All
+        assert_eq!(&payload[554 + 12..554 + 16], &i32::MIN.to_le_bytes()); // InteractionHitbox = NOT_FOUND
+        assert_eq!(&payload[554 + 43..554 + 47], &1.0f32.to_le_bytes()); // SoundOcclusionOpacity
+        assert_eq!(&payload[554 + 114..554 + 118], &1.0f32.to_le_bytes()); // ClimbUpSpeedMultiplier
+        assert_eq!(&payload[554 + 131..554 + 135], &0.82f32.to_le_bytes()); // Drag
+        assert_eq!(&payload[554 + 135..554 + 139], &0.18f32.to_le_bytes()); // Friction
+        assert_eq!(&payload[554 + 151..554 + 155], &1.0f32.to_le_bytes()); // JumpForceMultiplier
+        // InteractionHint slot (16) points at the generic hint string.
+        let hint_off = i32::from_le_bytes(payload[554 + 241..554 + 245].try_into().unwrap()) as usize;
+        let hint_at = 554 + 277 + hint_off;
+        assert_eq!(payload[hint_at], 31); // varint length
+        assert_eq!(&payload[hint_at + 1..hint_at + 32], b"server.interactionHints.generic");
+        // Entry 1 is 955 bytes: 538 + the 417-byte ALL_SUPPORTING_FACES map.
+        assert_eq!(payload.len(), 550 + 4 + 955);
     }
 
     #[test]

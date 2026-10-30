@@ -463,7 +463,7 @@ fn apply_gate_bisect(fixed: &mut [u8; 177]) {
             eprintln!("[setup] gate bisect active: {spec}");
         });
     }
-    const ALL: [&str; 15] = [
+    const ALL: [&str; 18] = [
         "looping",
         "supports-required",
         "alpha-blending",
@@ -479,6 +479,9 @@ fn apply_gate_bisect(fixed: &mut [u8; 177]) {
         "placement-rotation",
         "allow-break-replace",
         "ignore-support",
+        "particle-color",
+        "texture-color",
+        "light",
     ];
     let mut names: Vec<&str> = Vec::new();
     for name in spec.split(',') {
@@ -518,6 +521,22 @@ fn apply_gate_bisect(fixed: &mut [u8; 177]) {
                 fixed[171] = 1;
             }
             "ignore-support" => fixed[172] = 1,
+            // The October shotgun also built the three
+            // nullable color/light structs with every byte 1;
+            // they are absent (null) in the stock build, so
+            // setting them means presence bit + 0x01 bytes.
+            "particle-color" => {
+                fixed[0] |= 0x01;
+                fixed[51..54].fill(1);
+            }
+            "texture-color" => {
+                fixed[0] |= 0x02;
+                fixed[54..57].fill(1);
+            }
+            "light" => {
+                fixed[0] |= 0x04;
+                fixed[57..61].fill(1);
+            }
             _ => {}
         }
     }

@@ -455,6 +455,14 @@ fn apply_gate_bisect(fixed: &mut [u8; 177]) {
     let Ok(spec) = std::env::var("RUSTALE_GATE_BISECT") else {
         return;
     };
+    {
+        // Log the active spec once so a pasted server log shows
+        // whether the diagnostic actually took effect.
+        static LOGGED: std::sync::Once = std::sync::Once::new();
+        LOGGED.call_once(|| {
+            eprintln!("[setup] gate bisect active: {spec}");
+        });
+    }
     const ALL: [&str; 15] = [
         "looping",
         "supports-required",

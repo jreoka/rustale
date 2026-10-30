@@ -433,6 +433,88 @@ fn write_supporting(w: &mut Writer, draw_type: u8, material: u8) {
     }
 }
 
+/// Diagnostic for the sinking investigation (2026-10-29): the
+/// client-side collision gate for a block is a single byte in
+/// the BlockType fixed block, proven on 2026-10-25 to be one of
+/// the fields the old all-ones shotgun flipped (with every
+/// candidate set, the gate passed and the client moved on to a
+/// different crash). RUSTALE_GATE_BISECT=<name>[,<name>...]
+/// sets exactly the named candidate fields to 1 on the Unknown
+/// (ground) block so a live test can bisect which field the
+/// gate is. "all" reproduces the full shotgun. Offsets are the
+/// field positions in the generated BlockType.Serialize order
+/// (FixedBlockSize 177): Looping 24, BlockSupportsRequiredFor
+/// 29, RequiresAlphaBlending 30, CubeShadingMode 31,
+/// RandomRotation 32, VariantRotation 33,
+/// RotationYawPlacementOffset 34, MovementSettings at 113
+/// (IsClimbable +0, IsBouncy +13, DisableAutoStep +42),
+/// PlacementSettings at 156 (bool bits +0, PreviewVisibility
+/// +1, RotationMode +2, AllowBreakReplace +15; presence is
+/// null-bit byte0 0x20), IgnoreSupportWhenPlaced 172.
+fn apply_gate_bisect(fixed: &mut [u8; 177]) {
+    let Ok(spec) = std::env::var("RUSTALE_GATE_BISECT") else {
+        return;
+    };
+    const ALL: [&str; 15] = [
+        "looping",
+        "supports-required",
+        "alpha-blending",
+        "shading",
+        "random-rotation",
+        "variant-rotation",
+        "yaw-offset",
+        "climbable",
+        "bouncy",
+        "disable-auto-step",
+        "placement-bits",
+        "placement-visibility",
+        "placement-rotation",
+        "allow-break-replace",
+        "ignore-support",
+    ];
+    let mut names: Vec<&str> = Vec::new();
+    for name in spec.split(',') {
+        let name = name.trim();
+        if name == "all" {
+            names.extend(ALL);
+        } else {
+            names.push(name);
+        }
+    }
+    for name in names {
+        match name {
+            "looping" => fixed[24] = 1,
+            "supports-required" => fixed[29] = 1,
+            "alpha-blending" => fixed[30] = 1,
+            "shading" => fixed[31] = 1,
+            "random-rotation" => fixed[32] = 1,
+            "variant-rotation" => fixed[33] = 1,
+            "yaw-offset" => fixed[34] = 1,
+            "climbable" => fixed[113] = 1,
+            "bouncy" => fixed[126] = 1,
+            "disable-auto-step" => fixed[155] = 1,
+            "placement-bits" => {
+                fixed[0] |= 0x20;
+                fixed[156] = 1;
+            }
+            "placement-visibility" => {
+                fixed[0] |= 0x20;
+                fixed[157] = 1;
+            }
+            "placement-rotation" => {
+                fixed[0] |= 0x20;
+                fixed[158] = 1;
+            }
+            "allow-break-replace" => {
+                fixed[0] |= 0x20;
+                fixed[171] = 1;
+            }
+            "ignore-support" => fixed[172] = 1,
+            _ => {}
+        }
+    }
+}
+
 fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: bool, support: bool) -> Vec<u8> {
     // Mirror the reference BlockType.toPacket() materialization: Tint,
     // BiomeTint, ShaderEffect, ModelTexture, Supporting and
@@ -456,6 +538,9 @@ fn block_type(name: &str, draw_type: u8, material: u8, opacity: u8, unknown: boo
     fixed[61..85].fill(0xFF); // Tint: six i32 at -1
     // BiomeTint at 85..109 stays zeroed (the config defaults are 0).
     fixed[173..177].copy_from_slice(&i32::MIN.to_le_bytes()); // TransitionToTag = TAG_NOT_FOUND
+    if unknown {
+        apply_gate_bisect(&mut fixed);
+    }
     let mut w = Writer::new();
     w.buf.extend_from_slice(&fixed);
     // Slots in variable-field order: Name 1, ShaderEffect 2,
